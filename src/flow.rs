@@ -1,182 +1,164 @@
-//! A step within a flow
-
+use crate::action::Action;
+use crate::flow::private::Sealed;
+use std::any::TypeId;
 use std::marker::PhantomData;
+use std::num::NonZero;
+use std::ops::Index;
+use thiserror::Error;
 
-/// A step
-pub trait Flow: Send {
-    type Input: Send;
-    type Output: Send;
+/// Create a flow graph, with an input and an ultimate output
+pub struct Flow<I: Send = (), O: Send = ()> {
+    _marker: PhantomData<fn(I) -> O>,
+}
 
-    /// Runs this step
-    fn run(&mut self, input: Self::Input) -> Self::Output;
-
-    /// Maps the output of this flow
-    fn map<U, F>(self, f: F) -> Map<Self, U, F>
-    where
-        Self: Sized,
-        F: FnMut(Self::Output) -> U + Send,
-        U: Send,
-    {
-        Map {
-            flow: self,
-            map: f,
-            _marker: Default::default(),
+impl<I: Send, O: Send> Flow<I, O> {
+    /// Creates a new flow
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
         }
     }
 
-    /// Chains two flows together
-    fn chain<F>(self, other: F) -> Chain<Self, F>
-    where
-        Self: Sized,
-        F: Flow<Input = Self::Output>,
-    {
-        Chain {
-            flow1: self,
-            flow2: other,
+    /// Gets a representation of the input of a flow
+    pub fn input(&self) -> FlowInput<I> {
+        todo!()
+    }
+
+    /// Gets the representation of the output of a flow
+    pub fn output(&self) -> FlowOutput<O> {
+        todo!()
+    }
+
+    /// Adds a step to this flow
+    pub fn add<A: Action + 'static>(
+        &mut self,
+        name: impl AsRef<str>,
+        step: A,
+    ) -> StepReference<A::Input, A::Output> {
+        todo!()
+    }
+
+    /// Applies this flow with a given input
+    pub fn apply(self, i: I) -> Result<O, FlowError> {
+        todo!()
+    }
+}
+
+
+
+impl<O: Send> Flow<(), O> {
+    /// Gets the end result of this flow
+    #[inline]
+    pub fn get(self) -> Result<O, FlowError> {
+        self.apply(())
+    }
+}
+
+impl<I: Send> Flow<I, ()> {
+    /// Runs this flow with the given input
+    #[inline]
+    pub fn accept(self, i: I) -> Result<(), FlowError> {
+        self.apply(i)
+    }
+}
+
+pub struct FlowInput<I> {
+    flavor: DataFlavor<I>,
+}
+
+impl<I> FlowInput<Vec<I>> {
+    /// Gets the nth index of this input
+    pub fn nth(&self, i: usize) -> FlowInput<I> {
+        todo!()
+    }
+}
+impl<I> Sealed for FlowInput<I> {}
+impl<I: Send> DataOutput<I> for FlowInput<I> {}
+
+enum DataFlavor<T> {
+    Single(SingleData<T>),
+    Vec(VecData<T>),
+}
+
+struct SingleData<I> {
+    _marker: PhantomData<I>,
+}
+
+struct VecData<T> {
+    _marker: PhantomData<Vec<T>>,
+}
+
+pub struct FlowOutput<T> {
+    marker: PhantomData<T>,
+}
+
+impl<T> Sealed for FlowOutput<T> {}
+impl<T: Send, D: DataOutput<T>> FlowsFrom<D> for FlowOutput<T> {
+    fn flows_from(&mut self, i: D) {
+        todo!()
+    }
+}
+
+/// Represents something that can be *used* as an input for a step
+pub trait DataInput<I: Send> {
+    #[doc(hidden)]
+    fn id(&self) -> usize;
+
+}
+/// Represents the output of a step
+pub trait DataOutput<O: Send> {}
+
+impl<D: DataOutput<T>, T: Send> DataOutput<Vec<T>> for Vec<D> {}
+impl<D1: DataOutput<T>, D2: DataOutput<U>, T: Send, U: Send> DataOutput<(T, U)> for (D1, D2) {}
+
+/// A trait for a type that gets data from something
+pub trait FlowsFrom<I> {
+    fn flows_from(&mut self, i: I);
+}
+
+pub trait FlowsInto<O> {
+    fn flows_into(&mut self, o: O);
+}
+
+impl<I: Send, O: Send, T: DataOutput<I>> FlowsFrom<T> for StepReference<I, O> {
+    fn flows_from(&mut self, i: T) {
+        todo!()
+    }
+}
+
+// impl<I: Send, O: Send, T: DataOutput<O>> FlowsFrom<T> for StepReference<I, O> {
+//     fn flows_from(&mut self, i: T) {
+//         todo!()
+//     }
+// }
+
+/// A reference to a step
+pub struct StepReference<I: Send, O: Send> {
+    id: NonZero<usize>,
+    name: String,
+    input_ty: TypeId,
+    output_ty: TypeId,
+    _marker: PhantomData<fn(I) -> O>,
+}
+
+impl<I: Send, O: Send> Clone for StepReference<I, O> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            input_ty: self.input_ty.clone(),
+            output_ty: self.output_ty.clone(),
+            _marker: PhantomData,
         }
     }
 }
 
-pub type BoxFlow<'lf, I, O> = Box<dyn Flow<Input = I, Output = O> + 'lf>;
+impl<I: Send, O: Send> Sealed for StepReference<I, O> {}
+impl<I: Send, O: Send> DataOutput<O> for StepReference<I, O> {}
 
-impl<'a, I, O> Flow for Box<dyn Flow<Input = I, Output = O> + 'a>
-where
-    I: Send + 'a,
-    O: Send + 'a,
-{
-    type Input = I;
-    type Output = O;
+#[derive(Debug, Error)]
+pub enum FlowError {}
 
-    fn run(&mut self, input: Self::Input) -> Self::Output {
-        (**self).run(input)
-    }
-}
-
-
-/// A step that maps the output of an inner
-pub struct Map<F, U, M>
-where
-    F: Flow,
-    U: Send,
-    M: FnMut(F::Output) -> U + Send,
-{
-    flow: F,
-    map: M,
-    _marker: PhantomData<U>,
-}
-
-impl<F: Flow, U: Send, M: FnMut(F::Output) -> U + Send> Flow for Map<F, U, M> {
-    type Input = F::Input;
-    type Output = U;
-
-    fn run(&mut self, input: Self::Input) -> Self::Output {
-        let mid = self.flow.run(input);
-        (self.map)(mid)
-    }
-}
-
-/// Chains two flows together
-pub struct Chain<F1, F2>
-where
-    F1: Flow,
-    F2: Flow<Input = F1::Output>,
-{
-    flow1: F1,
-    flow2: F2,
-}
-
-impl<F1, F2> Flow for Chain<F1, F2>
-where
-    F1: Flow,
-    F2: Flow<Input = F1::Output>,
-{
-    type Input = F1::Input;
-    type Output = F2::Output;
-
-    fn run(&mut self, input: Self::Input) -> Self::Output {
-        let mid = self.flow1.run(input);
-        self.flow2.run(mid)
-    }
-}
-
-/// A flow based on a function
-pub struct FnFlow<I, O, F>
-where
-    I: Send,
-    O: Send,
-    F: FnMut(I) -> O + Send,
-{
-    f: F,
-    _marker: PhantomData<(I, O)>,
-}
-
-impl<I, O, F> Flow for FnFlow<I, O, F>
-where
-    I: Send,
-    O: Send,
-    F: FnMut(I) -> O + Send,
-{
-    type Input = I;
-    type Output = O;
-
-    fn run(&mut self, input: Self::Input) -> Self::Output {
-        (self.f)(input)
-    }
-}
-
-/// Creates a flow from a function
-pub fn flow<I, O, F>(f: F) -> FnFlow<I, O, F>
-where
-    I: Send,
-    O: Send,
-    F: FnMut(I) -> O + Send,
-{
-    FnFlow {
-        f,
-        _marker: PhantomData,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_closure_flow() {
-        let mut flow = flow(|i: i32| i * i);
-        assert_eq!(flow.run(1), 1);
-        assert_eq!(flow.run(2), 4);
-    }
-
-
-    #[test]
-    fn test_fn_flow() {
-        #[inline]
-        fn square(i: i32) -> i32 {
-            i * i
-        }
-        assert_eq!(flow(square).run(1), 1);
-    }
-
-    #[test]
-    fn test_map_flow() {
-        let mut flow = flow(|i: i32| i).map(|i| i * i);
-        assert_eq!(flow.run(1), 1);
-        assert_eq!(flow.run(2), 4);
-    }
-
-    #[test]
-    fn test_chain_flow() {
-        let mut flow = flow(|i: i32| i).chain(flow(|i| i * i));
-        assert_eq!(flow.run(1), 1);
-        assert_eq!(flow.run(2), 4);
-    }
-
-    #[test]
-    fn test_box_flow() {
-        let mut flow: BoxFlow<i32, i32> =
-            Box::new(Box::new(flow(|i: i32| i)).chain(flow(|i| i * i)));
-        assert_eq!(flow.run(1), 1);
-        assert_eq!(flow.run(2), 4);
-    }
+mod private {
+    pub trait Sealed {}
 }

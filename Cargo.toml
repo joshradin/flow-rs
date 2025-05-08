@@ -13,5 +13,5 @@ tracing = "0.1.41"
 crossbeam = "0.8.4"
 thiserror = "2.0.12"
 
-#[dev-dependencies]
+[dev-dependencies]
 test-log = { version = "0.2.17", features = ["trace"] }
