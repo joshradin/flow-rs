@@ -1,6 +1,17 @@
 [package]
 name = "flow-rs"
+description = "Executes jobs in order"
+keywords = ["concurrency"]
+license = "MIT or Apache-2.0"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+parking_lot = "0.12.3"
+num_cpus = "1.16.0"
+tracing = "0.1.41"
+crossbeam = "0.8.4"
+thiserror = "2.0.12"
+
+#[dev-dependencies]
+test-log = { version = "0.2.17", features = ["trace"] }
