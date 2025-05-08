@@ -2,13 +2,13 @@
 
 use crate::promise::{PollPromise, Promise};
 use crossbeam::atomic::AtomicCell;
-use crossbeam::channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
+use crossbeam::channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -23,7 +23,6 @@ pub trait WorkerPool {
         f: impl FnOnce() -> T + Send + 'static,
     ) -> impl Promise<Output = T> + 'static;
 }
-
 
 #[derive(Debug)]
 struct WorkerThread {
@@ -151,10 +150,7 @@ impl InnerThreadPoolExecutor {
         }
     }
 
-    fn submit_callable<T: Send + 'static, C>(
-        &mut self,
-        c: C,
-    ) -> ThreadPoolPromise<T>
+    fn submit_callable<T: Send + 'static, C>(&mut self, c: C) -> ThreadPoolPromise<T>
     where
         C: FnOnce() -> T + Send + 'static,
     {
@@ -302,11 +298,7 @@ impl ThreadPool {
 
 impl Default for ThreadPool {
     fn default() -> Self {
-        Self::new(
-            0,
-            num_cpus::get_physical(),
-            Duration::ZERO
-        )
+        Self::new(0, num_cpus::get_physical(), Duration::ZERO)
     }
 }
 
@@ -347,17 +339,17 @@ impl<T: Send> Promise for ThreadPoolPromise<T> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::promise::PromiseExt;
+    use crate::promise::{PromiseExt, PromiseSet};
     use std::convert::Infallible;
     use std::sync::{Arc, Barrier};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_thread_pool_executor() {
-        let mut pool = ThreadPool::default();
+        let pool = ThreadPool::default();
         let barrier = Arc::new(Barrier::new(2));
         let mut promises = vec![];
         for _ in 0..2 {
@@ -372,26 +364,25 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_thread_pool_more_than_core_count() {
-    //     let mut pool = ThreadPool::new(4, 4, Duration::ZERO);
-    //     let count = Arc::new(AtomicUsize::new(0));
-    //     let mut promises = vec![];
-    //     for idx in 0..128 {
-    //         let count = count.clone();
-    //         let promise = pool.submit::<_>(move || {
-    //             let i = count.fetch_add(1, Ordering::SeqCst);
-    //             println!("job #{:3}: {} -> {}", idx, i, i + 1);
-    //         });
-    //         promises.push(promise);
-    //     }
-    //     PromiseSet::from_iter(promises)
-    //         .get()
-    //         .into_iter()
-    //         .collect::<Result<Vec<_>, _>>()
-    //         .unwrap();
-    //     assert_eq!(count.load(Ordering::SeqCst), 128);
-    // }
+    #[test]
+    fn test_thread_pool_more_than_core_count() {
+        let mut pool = ThreadPool::new(4, 4, Duration::ZERO);
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut promises = vec![];
+        for idx in 0..128 {
+            let count = count.clone();
+            let promise = pool.submit::<_>(move || {
+                let i = count.fetch_add(1, Ordering::SeqCst);
+                println!("job #{:3}: {} -> {}", idx, i, i + 1);
+            });
+            promises.push(promise);
+        }
+        let _ = PromiseSet::from_iter(promises)
+            .get()
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(count.load(Ordering::SeqCst), 128);
+    }
 
     #[test]
     fn test_thread_pool_return_value() {

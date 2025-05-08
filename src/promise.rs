@@ -1,5 +1,6 @@
 //! Provides the [`Promise`] type, a synchronous equivalent of a [`Future`].
 
+use std::thread::yield_now;
 use std::time::{Duration, Instant};
 
 /// Polls a promise
@@ -32,6 +33,7 @@ pub trait PromiseExt: Promise + Sized {
                 PollPromise::Ready(t) => return t,
                 PollPromise::Pending => {}
             }
+            yield_now();
         }
     }
 
@@ -45,6 +47,7 @@ pub trait PromiseExt: Promise + Sized {
                 }
                 PollPromise::Pending => {}
             }
+            yield_now();
         }
         Err(self)
     }
@@ -93,7 +96,7 @@ impl<T: Send> Promise for Just<T> {
     }
 }
 
-impl<T> Promise for Box<dyn Promise<Output = T>> {
+impl<'lf, T> Promise for Box<dyn Promise<Output = T> + 'lf> {
     type Output = T;
 
     fn poll(&mut self) -> PollPromise<Self::Output> {
@@ -102,6 +105,48 @@ impl<T> Promise for Box<dyn Promise<Output = T>> {
 }
 
 pub type BoxPromise<'lf, T> = Box<dyn Promise<Output = T> + 'lf>;
+
+pub struct PromiseSet<'lf, T: Send + 'lf> {
+    finished: Vec<T>,
+    promises: Vec<BoxPromise<'lf, T>>,
+}
+
+impl<'lf, T: Send + 'lf> Promise for PromiseSet<'lf, T> {
+    type Output = Vec<T>;
+
+    fn poll(&mut self) -> PollPromise<Self::Output> {
+        let Self { finished, promises } = self;
+
+        let mut not_done = vec![];
+        for mut promise in promises.drain(..) {
+            match promise.poll() {
+                PollPromise::Ready(ready) => {
+                    finished.push(ready);
+                }
+                PollPromise::Pending => {
+                    not_done.push(promise);
+                }
+            }
+        }
+
+        promises.extend(not_done);
+
+        if promises.is_empty() {
+            PollPromise::Ready(finished.drain(..).collect())
+        } else {
+            PollPromise::Pending
+        }
+    }
+}
+
+impl<'lf, T: Send + 'lf, P: Promise<Output=T> + 'lf> FromIterator<P> for PromiseSet<'lf, T> {
+    fn from_iter<I: IntoIterator<Item = P>>(iter: I) -> Self {
+        Self {
+            finished: vec![],
+            promises: iter.into_iter().map(|b| Box::new(b) as BoxPromise<'lf, T>).collect(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
