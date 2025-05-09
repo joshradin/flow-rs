@@ -50,7 +50,6 @@ impl TaskOrdering {
         })?;
         let (res, _revmap) = dag_to_toposorted_adjacency_list::<_, NodeIndex>(&graph, &toposort);
         let (reduction, _cls) = petgraph::algo::tred::dag_transitive_reduction_closure(&res);
-        
 
         let ordering = lexico_topological_sort(&reduction);
 
@@ -71,7 +70,12 @@ impl TaskOrdering {
                 .max();
             let mut level = match max_level {
                 Some(max_level) => max_level + 1,
-                None => 0,
+                None => levels
+                    .iter()
+                    .filter_map(|(level, idxs)| -> Option<usize> {
+                        if idxs.len() < w { Some(*level) } else { None }
+                    })
+                    .sum::<usize>(),
             };
             while levels.get(&level).map(|s| s.len()) == Some(w) {
                 level += 1
@@ -228,7 +232,6 @@ fn get_cycle<N, E, Ix: IndexType>(
     scc.iter().find(|nodes| nodes.contains(&node)).cloned()
 }
 
-
 #[derive(Debug, Error)]
 pub enum TaskOrderingError {
     #[error("A cycle was detected. {}", format_cycle(cycle))]
@@ -246,7 +249,7 @@ fn format_cycle<T: Display>(cycle: &Vec<T>) -> String {
 #[cfg(test)]
 mod tests {
     use crate::action::action;
-    use crate::backend::task::{BackendTask, InputFlavor, ReusableOutput};
+    use crate::backend::task::{BackendTask, InputFlavor, ReusableOutput, SingleOutput, TaskError};
     use crate::backend::task_ordering::{TaskOrdering, TaskOrderingError};
 
     fn quick_task(name: &str) -> BackendTask {
@@ -256,6 +259,19 @@ mod tests {
             ReusableOutput::new(),
             action(|_: ()| {}),
         )
+    }
+
+    #[test]
+    fn test_make_reusable() {
+        let mut b = BackendTask::new(
+            "test",
+            InputFlavor::None,
+            SingleOutput::new(),
+            action(|_: ()| "hello"),
+        );
+        assert!(matches!(b.output().make_reusable::<isize>(), Err(TaskError::UnexpectedType { .. })));
+        assert!(matches!(b.output().make_reusable::<&str>(), Ok(())));
+        
     }
 
     #[test]
