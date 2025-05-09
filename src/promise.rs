@@ -165,6 +165,19 @@ pub struct PromiseSet<'lf, T: Send + 'lf> {
     promises: Vec<BoxPromise<'lf, T>>,
 }
 
+impl<'lf, T: Send + 'lf> PromiseSet<'lf, T> {
+    pub fn new() -> PromiseSet<'lf, T> {
+        Self {
+            promises: vec![],
+            finished: vec![],
+        }
+    }
+
+    pub fn insert<P: Promise<Output=T> + 'lf>(&mut self, p: P) {
+        self.promises.push(Box::new(p));
+    }
+}
+
 impl<'lf, T: Send + 'lf> Promise for PromiseSet<'lf, T> {
     type Output = Vec<T>;
 

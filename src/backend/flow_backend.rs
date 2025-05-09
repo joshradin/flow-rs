@@ -1,10 +1,14 @@
 //! Actual flow backend
 
-use crate::backend::task::{BackendTask, TaskId};
+use crate::backend::task::{BackendTask, TaskError, TaskId};
 use crate::backend::task_ordering::{TaskOrdering, TaskOrderingError};
 use crate::pool::{ThreadPool, WorkerPool};
+use crate::promise::{GetPromise, MapPromise, PromiseSet};
+use petgraph::visit::NodeRef;
 use std::collections::HashMap;
+use std::time::Instant;
 use thiserror::Error;
+use tracing::{debug, debug_span, error_span, Span};
 
 /// Executes flow
 #[derive(Debug)]
@@ -41,6 +45,40 @@ impl FlowBackend {
             self.worker_pool.max_size(),
         )?)
     }
+
+    /// Executes this flow
+    pub fn execute(&mut self) -> Result<(), FlowBackendError> {
+        error_span!("execute").in_scope(|| {
+            debug!(
+                "Calculating task ordering for {} tasks...",
+                self.tasks.len()
+            );
+            let instant = Instant::now();
+            let ordering = self.ordering()?;
+            debug!("Task ordering took: {:.3}ms", instant.elapsed().as_millis());
+
+            for (step, task_ids) in ordering.into_iter().enumerate() {
+                debug_span!("step", step = step).in_scope(||-> Result<(), FlowBackendError> {
+                    debug!("executing {} tasks: {:?}", task_ids.len(), task_ids);
+                    let mut promises = PromiseSet::new();
+                    for task in task_ids {
+                        let mut task = self.tasks.remove(&task).expect("Task not found");
+                        let promise = self.worker_pool.submit(move || {
+                            debug!("Starting execution of task {:?}", task);
+                            task.run()
+                        });
+                        promises.insert(promise);
+                    }
+                    for result in promises.get() {
+                        result?;
+                    }
+                    Ok(())
+                })?;
+            }
+
+            Ok(())
+        })
+    }
 }
 
 impl<P: WorkerPool> FlowBackend<P> {
@@ -63,6 +101,8 @@ impl Default for FlowBackend {
 pub enum FlowBackendError {
     #[error(transparent)]
     TaskOrdering(#[from] TaskOrderingError),
+    #[error(transparent)]
+    TaskError(#[from] TaskError),
 }
 
 #[cfg(test)]
@@ -71,6 +111,7 @@ mod tests {
     use crate::action::action;
     use crate::backend::task::test_fixtures::MockTaskInput;
     use crate::backend::task::{InputFlavor, ReusableOutput, SingleOutput};
+    use test_log::test;
 
     #[test]
     fn test_can_create_default_worker_pool() {
@@ -83,6 +124,13 @@ mod tests {
 
         let ordering = backend.ordering().expect("failed to get ordering");
         println!("{:#?}", ordering);
+    }
+
+    #[test]
+    fn test_run() {
+        let mut backend = create_backend();
+
+        backend.execute().expect("failed to execute flow");
     }
 
     fn create_backend() -> FlowBackend {

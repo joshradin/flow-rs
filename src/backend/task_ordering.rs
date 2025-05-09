@@ -48,12 +48,9 @@ impl TaskOrdering {
                 cycle: cycle.iter().map(|idx| graph[*idx]).collect(),
             }
         })?;
-        let (res, revmap) = dag_to_toposorted_adjacency_list::<_, NodeIndex>(&graph, &toposort);
+        let (res, _revmap) = dag_to_toposorted_adjacency_list::<_, NodeIndex>(&graph, &toposort);
         let (reduction, _cls) = petgraph::algo::tred::dag_transitive_reduction_closure(&res);
-
-        println!("{revmap:?}");
-        println!("{:?}", reduction);
-        println!("graph: {:#?}", map_graph(&graph, &map));
+        
 
         let ordering = lexico_topological_sort(&reduction);
 
@@ -230,6 +227,7 @@ fn get_cycle<N, E, Ix: IndexType>(
 
     scc.iter().find(|nodes| nodes.contains(&node)).cloned()
 }
+
 
 #[derive(Debug, Error)]
 pub enum TaskOrderingError {
