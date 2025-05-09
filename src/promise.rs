@@ -1,5 +1,6 @@
 //! Provides the [`Promise`] type, a synchronous equivalent of a [`Future`].
 
+use std::fmt::{Debug, Formatter};
 use std::thread::yield_now;
 use std::time::{Duration, Instant};
 
@@ -26,17 +27,6 @@ pub trait PromiseExt: Promise + Sized {
         }
     }
 
-    /// Gets the value of this promise once it's ready
-    fn get(mut self) -> Self::Output {
-        loop {
-            match self.poll() {
-                PollPromise::Ready(t) => return t,
-                PollPromise::Pending => {}
-            }
-            yield_now();
-        }
-    }
-
     /// Waits if necessary for at most the given computation to complete, then retrieves the result if available.
     fn get_timeout(mut self, timeout: Duration) -> Result<Self::Output, Self> {
         let start = Instant::now();
@@ -53,22 +43,80 @@ pub trait PromiseExt: Promise + Sized {
     }
 }
 
+pub trait GetPromise: IntoPromise + Sized {
+    /// Gets the value of this promise once it's ready
+    fn get(self) -> Self::Output {
+        let mut promise = self.into_promise();
+        loop {
+            match promise.poll() {
+                PollPromise::Ready(t) => return t,
+                PollPromise::Pending => {}
+            }
+            yield_now();
+        }
+    }
+}
+
 impl<T: Promise> PromiseExt for T {}
+impl<T: IntoPromise> GetPromise for T {}
 
 /// Gets this type as a [`Promise`]
 pub trait IntoPromise {
     type Output;
-    type Promise: Promise<Output = Self::Output>;
+    type IntoPromise: Promise<Output = Self::Output>;
 
-    fn into_promise(self) -> Self::Promise;
+    fn into_promise(self) -> Self::IntoPromise;
 }
 
 impl<P: Promise> IntoPromise for P {
     type Output = P::Output;
-    type Promise = Self;
+    type IntoPromise = Self;
 
-    fn into_promise(self) -> Self::Promise {
+    fn into_promise(self) -> Self::IntoPromise {
         self
+    }
+}
+
+/// An extension trait to map promise outputs
+pub trait MapPromise: Promise + Sized {
+    fn map<T, F>(self, f: F) -> Map<Self, T, F>
+    where
+        F: FnOnce(Self::Output) -> T + Send,
+        T: Send,
+    {
+        Map {
+            promise: self,
+            f: Some(f),
+        }
+    }
+}
+impl<T: Promise> MapPromise for T {}
+
+#[derive(Debug)]
+pub struct Map<P: Promise, T, F>
+where
+    F: FnOnce(P::Output) -> T + Send,
+    T: Send,
+{
+    promise: P,
+    f: Option<F>,
+}
+
+impl<P: Promise, T, F> Promise for Map<P, T, F>
+where
+    F: FnOnce(P::Output) -> T + Send,
+    T: Send,
+{
+    type Output = T;
+
+    fn poll(&mut self) -> PollPromise<Self::Output> {
+        match self.promise.poll() {
+            PollPromise::Ready(ready) => {
+                let f = self.f.take().expect("cannot poll Map twice");
+                PollPromise::Ready(f(ready))
+            }
+            PollPromise::Pending => PollPromise::Pending,
+        }
     }
 }
 
@@ -101,6 +149,12 @@ impl<'lf, T> Promise for Box<dyn Promise<Output = T> + 'lf> {
 
     fn poll(&mut self) -> PollPromise<Self::Output> {
         (**self).poll()
+    }
+}
+
+impl<'lf, T> Debug for Box<dyn Promise<Output = T> + 'lf> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoxPromise").finish_non_exhaustive()
     }
 }
 
@@ -139,18 +193,22 @@ impl<'lf, T: Send + 'lf> Promise for PromiseSet<'lf, T> {
     }
 }
 
-impl<'lf, T: Send + 'lf, P: Promise<Output=T> + 'lf> FromIterator<P> for PromiseSet<'lf, T> {
+impl<'lf, T: Send + 'lf, P: Promise<Output = T> + 'lf> FromIterator<P> for PromiseSet<'lf, T> {
     fn from_iter<I: IntoIterator<Item = P>>(iter: I) -> Self {
         Self {
             finished: vec![],
-            promises: iter.into_iter().map(|b| Box::new(b) as BoxPromise<'lf, T>).collect(),
+            promises: iter
+                .into_iter()
+                .map(|b| Box::new(b) as BoxPromise<'lf, T>)
+                .collect(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::promise::{BoxPromise, Just, PromiseExt};
+    use crate::promise::{BoxPromise, Just};
+    use crate::promise::{GetPromise, MapPromise};
 
     #[test]
     fn test_promise() {
@@ -164,5 +222,12 @@ mod tests {
         let promise: BoxPromise<'static, i32> = Box::new(Just::new(111_i32));
         let resolved = promise.get();
         assert_eq!(resolved, 111);
+    }
+
+    #[test]
+    fn test_map_promise() {
+        let promise: BoxPromise<'static, i32> = Box::new(Just::new(111_i32).map(|i| i * i));
+        let resolved = promise.get();
+        assert_eq!(resolved, 111 * 111);
     }
 }

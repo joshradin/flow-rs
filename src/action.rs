@@ -8,7 +8,7 @@ pub trait Action: Send {
     type Output: Send;
 
     /// Runs this step
-    fn run(&mut self, input: Self::Input) -> Self::Output;
+    fn apply(&mut self, input: Self::Input) -> Self::Output;
 
     /// Maps the output of this flow
     fn map<U, F>(self, f: F) -> Map<Self, U, F>
@@ -37,6 +37,25 @@ pub trait Action: Send {
     }
 }
 
+pub trait Runnable: Action<Input = (), Output = ()> + Sized {
+    fn run(&mut self) {
+        self.apply(());
+    }
+}
+impl<A: Action<Input = (), Output = ()>> Runnable for A {}
+pub trait Consumer<T: Send>: Action<Input = T, Output = ()> + Sized {
+    fn accept(&mut self, t: T) {
+        self.apply(t);
+    }
+}
+impl<T: Send, A: Action<Input = T, Output = ()>> Consumer<T> for A {}
+pub trait Supplier<T: Send>: Action<Input = (), Output = T> + Sized {
+    fn get(&mut self) -> T {
+        self.apply(())
+    }
+}
+impl<T: Send, A: Action<Input = (), Output = T>> Supplier<T> for A {}
+
 pub type BoxAction<'lf, I, O> = Box<dyn Action<Input = I, Output = O> + 'lf>;
 
 impl<'a, I, O> Action for Box<dyn Action<Input = I, Output = O> + 'a>
@@ -47,11 +66,10 @@ where
     type Input = I;
     type Output = O;
 
-    fn run(&mut self, input: Self::Input) -> Self::Output {
-        (**self).run(input)
+    fn apply(&mut self, input: Self::Input) -> Self::Output {
+        (**self).apply(input)
     }
 }
-
 
 /// A step that maps the output of an inner
 pub struct Map<F, U, M>
@@ -69,8 +87,8 @@ impl<F: Action, U: Send, M: FnMut(F::Output) -> U + Send> Action for Map<F, U, M
     type Input = F::Input;
     type Output = U;
 
-    fn run(&mut self, input: Self::Input) -> Self::Output {
-        let mid = self.flow.run(input);
+    fn apply(&mut self, input: Self::Input) -> Self::Output {
+        let mid = self.flow.apply(input);
         (self.map)(mid)
     }
 }
@@ -93,9 +111,9 @@ where
     type Input = F1::Input;
     type Output = F2::Output;
 
-    fn run(&mut self, input: Self::Input) -> Self::Output {
-        let mid = self.flow1.run(input);
-        self.flow2.run(mid)
+    fn apply(&mut self, input: Self::Input) -> Self::Output {
+        let mid = self.flow1.apply(input);
+        self.flow2.apply(mid)
     }
 }
 
@@ -119,7 +137,7 @@ where
     type Input = I;
     type Output = O;
 
-    fn run(&mut self, input: Self::Input) -> Self::Output {
+    fn apply(&mut self, input: Self::Input) -> Self::Output {
         (self.f)(input)
     }
 }
@@ -144,10 +162,9 @@ mod tests {
     #[test]
     fn test_closure_action() {
         let mut action = action(|i: i32| i * i);
-        assert_eq!(action.run(1), 1);
-        assert_eq!(action.run(2), 4);
+        assert_eq!(action.apply(1), 1);
+        assert_eq!(action.apply(2), 4);
     }
-
 
     #[test]
     fn test_fn_action() {
@@ -155,28 +172,28 @@ mod tests {
         fn square(i: i32) -> i32 {
             i * i
         }
-        assert_eq!(action(square).run(1), 1);
+        assert_eq!(action(square).apply(1), 1);
     }
 
     #[test]
     fn test_map_action() {
         let mut action = action(|i: i32| i).map(|i| i * i);
-        assert_eq!(action.run(1), 1);
-        assert_eq!(action.run(2), 4);
+        assert_eq!(action.apply(1), 1);
+        assert_eq!(action.apply(2), 4);
     }
 
     #[test]
     fn test_chain_action() {
         let mut action = action(|i: i32| i).chain(action(|i| i * i));
-        assert_eq!(action.run(1), 1);
-        assert_eq!(action.run(2), 4);
+        assert_eq!(action.apply(1), 1);
+        assert_eq!(action.apply(2), 4);
     }
 
     #[test]
     fn test_box_action() {
         let mut action: BoxAction<i32, i32> =
             Box::new(Box::new(action(|i: i32| i)).chain(action(|i| i * i)));
-        assert_eq!(action.run(1), 1);
-        assert_eq!(action.run(2), 4);
+        assert_eq!(action.apply(1), 1);
+        assert_eq!(action.apply(2), 4);
     }
 }

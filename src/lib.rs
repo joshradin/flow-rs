@@ -1,10 +1,9 @@
-#![doc =  include_str!("../README.md")]
+#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", env!("CARGO_PKG_README")))]
 
-mod executor;
+pub mod action;
+mod backend;
+mod flow;
 mod pool;
 pub mod promise;
-pub mod action;
-mod flow;
 
 pub use flow::*;
-

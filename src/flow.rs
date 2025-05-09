@@ -44,8 +44,6 @@ impl<I: Send, O: Send> Flow<I, O> {
     }
 }
 
-
-
 impl<O: Send> Flow<(), O> {
     /// Gets the end result of this flow
     #[inline]
@@ -103,7 +101,6 @@ impl<T: Send, D: DataOutput<T>> FlowsFrom<D> for FlowOutput<T> {
 pub trait DataInput<I: Send> {
     #[doc(hidden)]
     fn id(&self) -> usize;
-
 }
 /// Represents the output of a step
 pub trait DataOutput<O: Send> {}

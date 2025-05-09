@@ -1,6 +1,6 @@
 //! The worker pool used by flow-rs
 
-use crate::promise::{PollPromise, Promise};
+use crate::promise::{GetPromise, PollPromise, Promise};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use parking_lot::Mutex;
@@ -17,6 +17,8 @@ use tracing::{debug, error_span, instrument, trace, warn};
 
 /// Pool trait
 pub trait WorkerPool {
+    fn max_size(&self) -> usize;
+
     /// Submits some work into the worker pool
     fn submit<T: Send + 'static>(
         &self,
@@ -309,6 +311,10 @@ impl Debug for ThreadPool {
 }
 
 impl WorkerPool for ThreadPool {
+    fn max_size(&self) -> usize {
+        self.inner.lock().max_size
+    }
+
     fn submit<T: Send + 'static>(
         &self,
         f: impl FnOnce() -> T + Send + 'static,
@@ -344,8 +350,8 @@ mod tests {
     use super::*;
     use crate::promise::{PromiseExt, PromiseSet};
     use std::convert::Infallible;
-    use std::sync::{Arc, Barrier};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
 
     #[test]
     fn test_thread_pool_executor() {
