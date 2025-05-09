@@ -273,8 +273,8 @@ mod tests {
             SingleOutput::new(),
             action(|_: ()| "hello"),
         );
-        assert!(matches!(b.output().make_reusable::<isize>(), Err(TaskError::UnexpectedType { .. })));
-        assert!(matches!(b.output().make_reusable::<&str>(), Ok(())));
+        assert!(matches!(b.output_mut().make_reusable::<isize>(), Err(TaskError::UnexpectedType { .. })));
+        assert!(matches!(b.output_mut().make_reusable::<&str>(), Ok(())));
 
     }
 
@@ -282,17 +282,17 @@ mod tests {
     fn test_ordering() {
         let a = quick_task("a");
         let mut b = quick_task("b");
-        b.input().depends_on(a.id());
+        b.input_mut().depends_on(a.id());
         let mut c = quick_task("c");
-        c.input().depends_on(a.id());
+        c.input_mut().depends_on(a.id());
         let mut d = quick_task("d");
-        d.input().depends_on(a.id());
-        d.input().depends_on(b.id());
-        d.input().depends_on(c.id());
+        d.input_mut().depends_on(a.id());
+        d.input_mut().depends_on(b.id());
+        d.input_mut().depends_on(c.id());
         let mut e = quick_task("e");
-        e.input().depends_on(a.id());
-        e.input().depends_on(c.id());
-        e.input().depends_on(d.id());
+        e.input_mut().depends_on(a.id());
+        e.input_mut().depends_on(c.id());
+        e.input_mut().depends_on(d.id());
         let tasks = vec![a, b, c, d, e];
         let ordering = TaskOrdering::new(&tasks, 2).expect("failed to create order");
         assert_eq!(ordering.iter().count(), 4);
@@ -302,22 +302,22 @@ mod tests {
     fn test_multi_path_ordering() {
         let a = quick_task("a");
         let mut b = quick_task("b");
-        b.input().depends_on(a.id());
+        b.input_mut().depends_on(a.id());
         let mut c = quick_task("c");
-        c.input().depends_on(a.id());
+        c.input_mut().depends_on(a.id());
         let mut d = quick_task("d");
-        d.input().depends_on(a.id());
-        d.input().depends_on(b.id());
-        d.input().depends_on(c.id());
+        d.input_mut().depends_on(a.id());
+        d.input_mut().depends_on(b.id());
+        d.input_mut().depends_on(c.id());
         let mut e = quick_task("e");
-        e.input().depends_on(a.id());
-        e.input().depends_on(c.id());
-        e.input().depends_on(d.id());
+        e.input_mut().depends_on(a.id());
+        e.input_mut().depends_on(c.id());
+        e.input_mut().depends_on(d.id());
         let f = quick_task("f");
         let mut g = quick_task("g");
         let mut h = quick_task("h");
-        g.input().depends_on(f.id());
-        h.input().depends_on(g.id());
+        g.input_mut().depends_on(f.id());
+        h.input_mut().depends_on(g.id());
         let i = quick_task("i");
         let j = quick_task("j");
         let tasks = vec![a, b, c, d, e, f, g, h, i, j];
@@ -329,12 +329,12 @@ mod tests {
     fn test_cycle_detection() {
         let mut a = quick_task("a");
         let mut b = quick_task("b");
-        b.input().depends_on(a.id());
+        b.input_mut().depends_on(a.id());
         let mut c = quick_task("c");
-        c.input().depends_on(b.id());
-        a.input().depends_on(c.id());
+        c.input_mut().depends_on(b.id());
+        a.input_mut().depends_on(c.id());
         let mut d = quick_task("d");
-        d.input().depends_on(c.id());
+        d.input_mut().depends_on(c.id());
 
         let tasks = vec![a, b, c];
         let ordering = TaskOrdering::new(&tasks, 2).expect_err("should fail to create order");

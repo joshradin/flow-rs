@@ -118,7 +118,7 @@ where
 }
 
 /// A flow based on a function
-pub struct FnFlow<I, O, F>
+pub struct FnAction<I, O, F>
 where
     I: Send,
     O: Send,
@@ -128,7 +128,7 @@ where
     _marker: PhantomData<(I, O)>,
 }
 
-impl<I, O, F> Action for FnFlow<I, O, F>
+impl<I, O, F> Action for FnAction<I, O, F>
 where
     I: Send,
     O: Send,
@@ -143,15 +143,51 @@ where
 }
 
 /// Creates an action from a function
-pub fn action<I, O, F>(f: F) -> FnFlow<I, O, F>
+pub fn action<I, O, F>(f: F) -> FnAction<I, O, F>
 where
     I: Send,
     O: Send,
     F: FnMut(I) -> O + Send,
 {
-    FnFlow {
+    FnAction {
         f,
         _marker: PhantomData,
+    }
+}
+
+pub trait IntoAction<In, Out, Marker>: Sized {
+    type Action: Action<Input = In, Output = Out>;
+
+    fn into_action(self) -> Self::Action;
+}
+
+pub struct ProducerIntoAction<R>(PhantomData<R>);
+impl<R: Send + 'static, F: FnMut() -> R + Send + 'static> IntoAction<(), R, ProducerIntoAction<R>>
+    for F
+{
+    type Action = BoxAction<'static, (), R>;
+
+    fn into_action(mut self) -> Self::Action {
+        Box::new(action(move |_: ()| self())) as BoxAction<'static, (), R>
+    }
+}
+
+pub struct FunctionIntoAction<T, R>(PhantomData<(T, R)>);
+impl<T: Send + 'static, R: Send + 'static, F: FnMut(T) -> R + Send + 'static>
+    IntoAction<T, R, FunctionIntoAction<T, R>> for F
+{
+    type Action = FnAction<T, R, F>;
+
+    fn into_action(self) -> Self::Action {
+        action(self)
+    }
+}
+
+impl<A: Action> IntoAction<A::Input, A::Output, ()> for A {
+    type Action = A;
+
+    fn into_action(self) -> Self::Action {
+        self
     }
 }
 
@@ -195,5 +231,11 @@ mod tests {
             Box::new(Box::new(action(|i: i32| i)).chain(action(|i| i * i)));
         assert_eq!(action.apply(1), 1);
         assert_eq!(action.apply(2), 4);
+    }
+
+    #[test]
+    fn test_into_action() {
+        let mut io_action = (|i: i32| i * i).into_action();
+        let v = io_action.apply(123);
     }
 }

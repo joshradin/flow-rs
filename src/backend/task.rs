@@ -13,6 +13,8 @@ use std::marker::PhantomData;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
+use crate::backend::task::private::Sealed;
+use crate::Void;
 
 static TASK_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -106,6 +108,8 @@ impl BackendTask {
         self.input.dependencies()
     }
 
+
+
     /// Runs this task
     pub fn run(&mut self) -> Result<(), TaskError> {
         if self.input.input_required() {
@@ -138,14 +142,26 @@ impl BackendTask {
 
     /// Gets the input for this task
     #[must_use]
-    pub fn input(&mut self) -> &mut Input {
+    pub fn input_mut(&mut self) -> &mut Input {
         &mut self.input
+    }
+
+    /// Gets the input for this task
+    #[must_use]
+    pub fn input(&self) -> &Input {
+        &self.input
     }
 
     /// Gets the output of this task
     #[must_use]
-    pub fn output(&mut self) -> &mut Output {
+    pub fn output_mut(&mut self) -> &mut Output {
         &mut self.output
+    }
+
+    /// Gets the output of this task
+    #[must_use]
+    pub fn output(&self) -> &Output {
+        &self.output
     }
 
     pub fn nickname(&self) -> &str {
@@ -261,6 +277,8 @@ impl Input {
         }
     }
 
+
+
     /// Gets the list of task id dependencies for this task
     pub fn dependencies(&self) -> &HashSet<TaskId> {
         &self.task_dependencies
@@ -277,9 +295,13 @@ impl Input {
     {
         self.use_as_input_source(source)
     }
+
+    pub fn input_ty(&self) -> TypeId {
+        self.input_ty
+    }
 }
 
-pub trait AsOutputFlavor {
+pub trait AsOutputFlavor : Sealed {
     type Data: 'static;
 
     fn to_output(self, id: TaskId) -> Output;
@@ -293,6 +315,8 @@ impl<T: 'static + Send> SingleOutput<T> {
         Self(PhantomData)
     }
 }
+
+impl<T: 'static + Send> Sealed for SingleOutput<T> {}
 
 impl<T: 'static + Send> AsOutputFlavor for SingleOutput<T> {
     type Data = T;
@@ -313,6 +337,24 @@ impl<T: 'static + Send> AsOutputFlavor for SingleOutput<T> {
             flavor: OutputFlavor::Single,
             kind: OutputKind::Once(Some(Box::new(promise))),
             set_output_fn: Some(SetOutputFn::new(f)),
+        }
+    }
+}
+
+pub struct NoOutput;
+
+impl Sealed for NoOutput {}
+impl AsOutputFlavor for NoOutput {
+    type Data = ();
+
+    fn to_output(self, id: TaskId) -> Output {
+        Output {
+            task_id: id,
+            output_ty: TypeId::of::<()>(),
+            output_ty_str: type_name::<()>(),
+            flavor: OutputFlavor::None,
+            kind: OutputKind::None,
+            set_output_fn: None,
         }
     }
 }
@@ -340,6 +382,8 @@ impl<T: Send> Promise for RecvPromise<T> {
 }
 
 pub struct ReusableOutput<T: 'static + Send + Clone>(PhantomData<T>);
+
+impl<T: 'static + Send + Clone> Sealed for ReusableOutput<T> {}
 
 impl<T: 'static + Send + Clone> AsOutputFlavor for ReusableOutput<T> {
     type Data = T;
@@ -409,7 +453,9 @@ impl Output {
         Ok(())
     }
 
-
+    pub fn output_ty(&self) -> TypeId {
+        self.output_ty
+    }
 }
 
 fn create_reusable<T: Send + Clone + 'static>() -> (Reusable, impl FnOnce(Data) -> Result<(), TaskError> + Send + 'static) {
@@ -572,6 +618,11 @@ pub(crate) mod test_fixtures {
     }
 }
 
+mod private {
+    pub trait Sealed {}
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,7 +647,7 @@ mod tests {
                 i.to_string()
             }),
         );
-        task.input()
+        task.input_mut()
             .set_source(MockTaskInput(12))
             .expect("failed to set input");
         task.run().expect("failed to run task");
@@ -620,12 +671,12 @@ mod tests {
             }),
         );
         task1
-            .input()
+            .input_mut()
             .set_source(MockTaskInput(12))
             .expect("failed to set input");
         task2
-            .input()
-            .set_source(task1.output())
+            .input_mut()
+            .set_source(task1.output_mut())
             .expect("failed to set output for task 2");
         task1.run().expect("failed to run task1");
         thread::spawn(move || {

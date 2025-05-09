@@ -196,16 +196,16 @@ mod tests {
             }),
         );
         task1
-            .input()
+            .input_mut()
             .set_source(MockTaskInput(12))
             .expect("failed to set input");
         task2
-            .input()
-            .set_source(task1.output())
+            .input_mut()
+            .set_source(task1.output_mut())
             .expect("failed to set output for task 2");
         task3
-            .input()
-            .set_source(task1.output())
+            .input_mut()
+            .set_source(task1.output_mut())
             .expect("failed to set output for task 3");
         backend.add(task1);
         backend.add(task2);
