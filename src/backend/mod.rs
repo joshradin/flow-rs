@@ -1,6 +1,6 @@
 //! The backend implementation
 
-mod flow_backend;
-mod reusable;
-mod task;
-mod task_ordering;
+pub mod flow_backend;
+pub mod reusable;
+pub mod task;
+pub mod task_ordering;

@@ -5,10 +5,14 @@ use std::marker::PhantomData;
 use std::num::NonZero;
 use std::ops::Index;
 use thiserror::Error;
+use crate::backend::flow_backend::FlowBackend;
 
 /// Create a flow graph, with an input and an ultimate output
+///
+/// Flows are built from a set of tasks that can be run in a concurrent manner.
 pub struct Flow<I: Send = (), O: Send = ()> {
     _marker: PhantomData<fn(I) -> O>,
+    backend: FlowBackend
 }
 
 impl<I: Send, O: Send> Flow<I, O> {
@@ -16,6 +20,7 @@ impl<I: Send, O: Send> Flow<I, O> {
     pub fn new() -> Self {
         Self {
             _marker: PhantomData,
+            backend: FlowBackend::new(),
         }
     }
 
@@ -61,7 +66,7 @@ impl<I: Send> Flow<I, ()> {
 }
 
 pub struct FlowInput<I> {
-    flavor: DataFlavor<I>,
+    _marker: PhantomData<fn(I)>,
 }
 
 impl<I> FlowInput<Vec<I>> {
@@ -70,64 +75,10 @@ impl<I> FlowInput<Vec<I>> {
         todo!()
     }
 }
-impl<I> Sealed for FlowInput<I> {}
-impl<I: Send> DataOutput<I> for FlowInput<I> {}
 
-enum DataFlavor<T> {
-    Single(SingleData<T>),
-    Vec(VecData<T>),
+pub struct FlowOutput<I> {
+    _marker: PhantomData<fn(I)>,
 }
-
-struct SingleData<I> {
-    _marker: PhantomData<I>,
-}
-
-struct VecData<T> {
-    _marker: PhantomData<Vec<T>>,
-}
-
-pub struct FlowOutput<T> {
-    marker: PhantomData<T>,
-}
-
-impl<T> Sealed for FlowOutput<T> {}
-impl<T: Send, D: DataOutput<T>> FlowsFrom<D> for FlowOutput<T> {
-    fn flows_from(&mut self, i: D) {
-        todo!()
-    }
-}
-
-/// Represents something that can be *used* as an input for a step
-pub trait DataInput<I: Send> {
-    #[doc(hidden)]
-    fn id(&self) -> usize;
-}
-/// Represents the output of a step
-pub trait DataOutput<O: Send> {}
-
-impl<D: DataOutput<T>, T: Send> DataOutput<Vec<T>> for Vec<D> {}
-impl<D1: DataOutput<T>, D2: DataOutput<U>, T: Send, U: Send> DataOutput<(T, U)> for (D1, D2) {}
-
-/// A trait for a type that gets data from something
-pub trait FlowsFrom<I> {
-    fn flows_from(&mut self, i: I);
-}
-
-pub trait FlowsInto<O> {
-    fn flows_into(&mut self, o: O);
-}
-
-impl<I: Send, O: Send, T: DataOutput<I>> FlowsFrom<T> for StepReference<I, O> {
-    fn flows_from(&mut self, i: T) {
-        todo!()
-    }
-}
-
-// impl<I: Send, O: Send, T: DataOutput<O>> FlowsFrom<T> for StepReference<I, O> {
-//     fn flows_from(&mut self, i: T) {
-//         todo!()
-//     }
-// }
 
 /// A reference to a step
 pub struct StepReference<I: Send, O: Send> {
@@ -151,7 +102,6 @@ impl<I: Send, O: Send> Clone for StepReference<I, O> {
 }
 
 impl<I: Send, O: Send> Sealed for StepReference<I, O> {}
-impl<I: Send, O: Send> DataOutput<O> for StepReference<I, O> {}
 
 #[derive(Debug, Error)]
 pub enum FlowError {}

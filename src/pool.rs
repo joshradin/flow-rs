@@ -1,14 +1,14 @@
 //! The worker pool used by flow-rs
 
-use crate::promise::{GetPromise, PollPromise, Promise};
+use crate::promise::{GetPromise, Just, PollPromise, Promise};
 use crossbeam::atomic::AtomicCell;
-use crossbeam::channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
+use crossbeam::channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -20,9 +20,9 @@ pub trait WorkerPool {
     fn max_size(&self) -> usize;
 
     /// Submits some work into the worker pool
-    fn submit<T: Send + 'static>(
+    fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
-        f: impl FnOnce() -> T + Send + 'static,
+        f: F,
     ) -> impl Promise<Output = T> + 'static;
 }
 
@@ -220,7 +220,8 @@ impl InnerThreadPoolExecutor {
     }
 
     /// Steps this executor
-    #[instrument(skip_all, fields(threads=%self.threads.len(), running=%self.running(), idle=%self.idle()))]
+    #[instrument(skip_all, fields(threads=%self.threads.len(), running=%self.running(), idle=%self.idle()
+    ))]
     fn step(&mut self) {
         trace!("Stepping thread pool...");
         self.stop_non_core_idle();
@@ -311,21 +312,31 @@ impl Debug for ThreadPool {
 }
 
 impl WorkerPool for ThreadPool {
+
     fn max_size(&self) -> usize {
         self.inner.lock().max_size
     }
 
-    fn submit<T: Send + 'static>(
+    fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
-        f: impl FnOnce() -> T + Send + 'static,
+        f: F,
     ) -> impl Promise<Output = T> + 'static {
         let mut inner = self.inner.lock();
         inner.submit_callable(f)
     }
+
+
 }
+
 
 /// A thread pool promise
 pub struct ThreadPoolPromise<T: Send> {
+    receiver: Receiver<Result<T, Box<dyn Any + Send>>>,
+    _marker: PhantomData<T>,
+}
+
+/// A thread pool promise
+pub struct ScopedThreadPoolPromise<T: Send> {
     receiver: Receiver<Result<T, Box<dyn Any + Send>>>,
     _marker: PhantomData<T>,
 }
@@ -348,7 +359,7 @@ impl<T: Send> Promise for ThreadPoolPromise<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::promise::{PromiseExt, PromiseSet};
+    use crate::promise::PromiseSet;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
@@ -375,9 +386,10 @@ mod tests {
         let mut pool = ThreadPool::new(4, 4, Duration::ZERO);
         let count = Arc::new(AtomicUsize::new(0));
         let mut promises = vec![];
+
         for idx in 0..128 {
             let count = count.clone();
-            let promise = pool.submit::<_>(move || {
+            let promise = pool.submit(move || {
                 let i = count.fetch_add(1, Ordering::SeqCst);
                 println!("job #{:3}: {} -> {}", idx, i, i + 1);
             });

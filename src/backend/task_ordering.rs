@@ -70,12 +70,16 @@ impl TaskOrdering {
                 .max();
             let mut level = match max_level {
                 Some(max_level) => max_level + 1,
-                None => levels
-                    .iter()
-                    .filter_map(|(level, idxs)| -> Option<usize> {
-                        if idxs.len() < w { Some(*level) } else { None }
-                    })
-                    .sum::<usize>(),
+                None => {
+                    levels
+                        .iter()
+                        .filter_map(|(level, idxs)| -> Option<usize> {
+                            if idxs.len() < w { Some(*level) } else { None }
+                        })
+                        .min()
+                        .unwrap_or(0)
+                }
+
             };
             while levels.get(&level).map(|s| s.len()) == Some(w) {
                 level += 1
@@ -271,7 +275,7 @@ mod tests {
         );
         assert!(matches!(b.output().make_reusable::<isize>(), Err(TaskError::UnexpectedType { .. })));
         assert!(matches!(b.output().make_reusable::<&str>(), Ok(())));
-        
+
     }
 
     #[test]
@@ -291,16 +295,36 @@ mod tests {
         e.input().depends_on(d.id());
         let tasks = vec![a, b, c, d, e];
         let ordering = TaskOrdering::new(&tasks, 2).expect("failed to create order");
-        for (step, task_ids) in ordering.iter().enumerate() {
-            print!("step {}: ", step);
-            let names = task_ids
-                .iter()
-                .map(|id| tasks.iter().find(|task| task.id() == *id).unwrap())
-                .collect::<Vec<_>>();
-            println!("{names:?}");
-        }
         assert_eq!(ordering.iter().count(), 4);
     }
+
+    #[test]
+    fn test_multi_path_ordering() {
+        let a = quick_task("a");
+        let mut b = quick_task("b");
+        b.input().depends_on(a.id());
+        let mut c = quick_task("c");
+        c.input().depends_on(a.id());
+        let mut d = quick_task("d");
+        d.input().depends_on(a.id());
+        d.input().depends_on(b.id());
+        d.input().depends_on(c.id());
+        let mut e = quick_task("e");
+        e.input().depends_on(a.id());
+        e.input().depends_on(c.id());
+        e.input().depends_on(d.id());
+        let f = quick_task("f");
+        let mut g = quick_task("g");
+        let mut h = quick_task("h");
+        g.input().depends_on(f.id());
+        h.input().depends_on(g.id());
+        let i = quick_task("i");
+        let j = quick_task("j");
+        let tasks = vec![a, b, c, d, e, f, g, h, i, j];
+        let ordering = TaskOrdering::new(&tasks, 3).expect("failed to create order");
+        assert_eq!(ordering.iter().count(), 4);
+    }
+
     #[test]
     fn test_cycle_detection() {
         let mut a = quick_task("a");
