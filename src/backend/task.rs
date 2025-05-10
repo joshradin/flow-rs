@@ -1,18 +1,20 @@
 //! A task within the backend
 
 use crate::action::{Action, BoxAction, Runnable};
+use crate::backend::funnel::BackendFunnel;
 use crate::backend::reusable::Reusable;
 use crate::backend::task::private::Sealed;
-use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise};
+use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise, PromiseExt};
 use crate::promise::{IntoPromise, MapPromise};
 use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
-use parking_lot::Mutex;
 use std::any::{type_name, Any, TypeId};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use static_assertions::assert_eq_size;
 use thiserror::Error;
 
 static TASK_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -81,9 +83,34 @@ impl BackendTask {
         let (input_sender, input_receiver) = bounded::<Data>(1);
         let (output_sender, output_receiver) = bounded::<Data>(1);
 
-        let erased_action = ReceiveInputAction::new(input_receiver)
-            .chain(action)
-            .chain(SendOutputAction::new(output_sender));
+        let erased_action: BoxAction<(), ()> = match input {
+            InputFlavor::None => {
+                assert_eq!(
+                    TypeId::of::<I>(),
+                    TypeId::of::<()>(),
+                    "illegal input type for flavor {:?}",
+                    input
+                );
+                let mut action = action;
+                let safe_action = crate::action::action(move |_: ()| -> O {
+                    let fake = unsafe {
+                        assert_eq!(size_of::<I>(), 0, "input must have zero size");
+                        let fake: I = MaybeUninit::uninit().assume_init();
+                        fake
+                    };
+                    action.apply(fake)
+                });
+                Box::new(safe_action.chain(SendOutputAction::new(output_sender)))
+            }
+            InputFlavor::Single => Box::new(
+                ReceiveInputAction::new(input_receiver)
+                    .chain(action)
+                    .chain(SendOutputAction::new(output_sender)),
+            ),
+            InputFlavor::Funnel => {
+                todo!()
+            }
+        };
         let output = output.to_output(id);
 
         Self {
@@ -93,7 +120,7 @@ impl BackendTask {
             output,
             action_input_sender: input_sender,
             action_output_receiver: output_receiver,
-            action: Box::new(erased_action) as BoxAction<_, _>,
+            action: erased_action,
         }
     }
 
@@ -113,11 +140,13 @@ impl BackendTask {
             match std::mem::replace(&mut self.input.kind, InputKind::None) {
                 InputKind::None => return Err(TaskError::NoInput),
                 InputKind::Single(s) => {
-                    let data = s.get();
+                    let data = s.try_get().map_err(|_| TaskError::InputNotReady)?;
                     self.action_input_sender.send(data)?;
                 }
-                InputKind::Multi(m) => {
-                    todo!("multi input")
+                InputKind::Funnel(m) => {
+                    let promise = m.into_promise();
+                    let data = promise.try_get().map_err(|_| TaskError::InputNotReady)?;
+                    self.action_input_sender.send(Box::new(data) as Data)?;
                 }
             }
         } else if !matches!(self.input.kind, InputKind::None) {
@@ -225,6 +254,7 @@ impl<T: Send + Sync + 'static> Action for SendOutputAction<T> {
 pub enum InputFlavor {
     None,
     Single,
+    Funnel,
 }
 
 /// An input source
@@ -252,14 +282,17 @@ impl Input {
             input_ty_str: type_name::<T>(),
             task_dependencies: HashSet::new(),
             flavor: input_flavor,
-            kind: InputKind::None,
+            kind: match input_flavor {
+                InputFlavor::Funnel => InputKind::Funnel(BackendFunnel::new()),
+                _ => InputKind::None,
+            },
         }
     }
 
     fn input_required(&self) -> bool {
         match self.flavor {
             InputFlavor::None => false,
-            InputFlavor::Single => true,
+            InputFlavor::Single | InputFlavor::Funnel => true,
         }
     }
 
@@ -409,7 +442,7 @@ impl<T: 'static + Send + Clone> ReusableOutput<T> {
 enum InputKind {
     None,
     Single(BoxPromise<'static, Data>),
-    Multi(Mutex<Vec<BoxPromise<'static, Data>>>),
+    Funnel(BackendFunnel),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -515,6 +548,47 @@ impl InputSource<&mut Output> for Input {
                     }
                 }
             }
+            (InputFlavor::Funnel, OutputFlavor::Single) => {
+                let OutputKind::Once(once) = &mut other.kind else {
+                    panic!(
+                        "flavor and kind mismatch. flavor = {:?}, kind = {:?}",
+                        other.flavor, other.kind
+                    );
+                };
+                let InputKind::Funnel(funnel) = &mut self.kind else {
+                    panic!(
+                        "flavor and kind mismatch. flavor = {:?}, kind = {:?}",
+                        self.flavor, self.kind
+                    );
+                };
+
+                match once.take() {
+                    None => Err(TaskError::OutputCanNotBeReused),
+                    Some(some) => {
+                        funnel.insert(some);
+                        self.depends_on(other.task_id);
+                        Ok(())
+                    }
+                }
+            }
+            (InputFlavor::Funnel, OutputFlavor::Reusable) => {
+                let OutputKind::Reusable(reusable) = &mut other.kind else {
+                    panic!(
+                        "flavor and kind mismatch. flavor = {:?}, kind = {:?}",
+                        other.flavor, other.kind
+                    );
+                };
+                let InputKind::Funnel(funnel) = &mut self.kind else {
+                    panic!(
+                        "flavor and kind mismatch. flavor = {:?}, kind = {:?}",
+                        self.flavor, self.kind
+                    );
+                };
+
+                funnel.insert(reusable.clone());
+                self.depends_on(other.task_id);
+                Ok(())
+            }
             (i, o) => Err(TaskError::OutputCanNotBeUsedAsInput {
                 output_flavor: o,
                 input_flavor: i,
@@ -548,6 +622,8 @@ enum OutputKind {
 pub enum TaskError {
     #[error("Output can not be re-used")]
     OutputCanNotBeReused,
+    #[error("The input for this task is yet ready")]
+    InputNotReady,
     #[error("No input is expected for this task")]
     NoInput,
     #[error("This task did not expect an input")]
@@ -594,7 +670,7 @@ pub(crate) mod test_fixtures {
 
         fn use_as_input_source(&mut self, other: MockTaskInput<T>) -> Result<(), TaskError> {
             self.check_type::<T>()?;
-            let as_promise = Just::new(other.into_inner());
+            let as_promise = Just::new(other.into_inner()).map(|t| Box::new(t) as Data);
             match (self.flavor, &mut self.kind) {
                 (InputFlavor::None, _) => return Err(TaskError::UnexpectedInput),
                 (InputFlavor::Single, InputKind::None) => {
@@ -605,11 +681,16 @@ pub(crate) mod test_fixtures {
                         });
                     }
 
-                    let promise = Box::new(as_promise.map(|t| Box::new(t) as Data))
-                        as BoxPromise<'static, Data>;
+                    let promise = Box::new(as_promise) as BoxPromise<'static, Data>;
                     self.kind = InputKind::Single(promise);
                 }
                 (InputFlavor::Single, _) => return Err(TaskError::InputAlreadySet),
+                (InputFlavor::Funnel, InputKind::Funnel(funnel)) => {
+                    funnel.insert(as_promise);
+                }
+                (InputFlavor::Funnel, _) => {
+                    panic!("funnel flavor has no funnel kind")
+                }
             }
             Ok(())
         }
@@ -626,6 +707,7 @@ mod tests {
     use crate::action::action;
     use crate::backend::task::test_fixtures::MockTaskInput;
     use std::thread;
+    use crossbeam::channel::unbounded;
 
     #[test]
     fn test_task_id() {
@@ -648,6 +730,34 @@ mod tests {
             .set_source(MockTaskInput(12))
             .expect("failed to set input");
         task.run().expect("failed to run task");
+    }
+
+    #[test]
+    fn test_no_input_task() {
+        let (tx, rx) = bounded::<&str>(1);
+        let mut task = BackendTask::new(
+            "task",
+            InputFlavor::None,
+            SingleOutput::new(),
+            action(move |_: ()| {
+                tx.send("Hello, world").expect("failed to send input");
+            }),
+        );
+        task.run().expect("failed to run task");
+        let output = rx.try_recv().expect("failed to receive output");
+        assert_eq!(output, "Hello, world");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_no_input_task_with_input_fails() {
+        let _task = BackendTask::new(
+            "task",
+            InputFlavor::None,
+            SingleOutput::new(),
+            action(move |_: isize| {
+            }),
+        );
     }
 
     #[test]
@@ -681,5 +791,47 @@ mod tests {
         })
         .join()
         .expect("failed to join thread");
+    }
+
+    #[test]
+    fn test_funnel_task() {
+        let mut task1 = BackendTask::new(
+            "task1",
+            InputFlavor::Single,
+            SingleOutput::new(),
+            action(|i: i32| i * i),
+        );
+        let mut task2 = BackendTask::new(
+            "task2",
+            InputFlavor::Single,
+            SingleOutput::new(),
+            action(|i: i32| i * i * i),
+        );
+        let mut task3 = BackendTask::new(
+            "task3",
+            InputFlavor::Funnel,
+            SingleOutput::new(),
+            action(|i: Vec<i32>| i.iter().sum::<i32>()),
+        );
+        task1
+            .input_mut()
+            .set_source(MockTaskInput(12))
+            .expect("failed to set input");
+        task2
+            .input_mut()
+            .set_source(MockTaskInput(12))
+            .expect("failed to set input for task 2");
+        task3
+            .input_mut()
+            .set_source(task1.output_mut())
+            .expect("failed to set input for task 3");
+        task3
+            .input_mut()
+            .set_source(task2.output_mut())
+            .expect("failed to set input for task 3");
+
+        task1.run().expect("failed to run task1");
+        task2.run().expect("failed to run task2");
+        task3.run().expect("failed to run task3");
     }
 }

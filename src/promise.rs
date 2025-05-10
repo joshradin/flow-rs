@@ -165,6 +165,12 @@ pub struct PromiseSet<'lf, T: Send + 'lf> {
     promises: Vec<BoxPromise<'lf, T>>,
 }
 
+impl<'lf, T: Send + 'lf> Debug for PromiseSet<'lf, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PromiseSet").finish_non_exhaustive()
+    }
+}
+
 impl<'lf, T: Send + 'lf> PromiseSet<'lf, T> {
     pub fn new() -> PromiseSet<'lf, T> {
         Self {

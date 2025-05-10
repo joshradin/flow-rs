@@ -4,6 +4,7 @@ use crate::promise::{IntoPromise, PollPromise, Promise, PromiseSet};
 /// The backend funnel implementation.
 ///
 /// Funnels accepts inputs from tasks, and produces one output
+#[derive(Debug)]
 pub struct BackendFunnel {
     promises: PromiseSet<'static, Data>,
 }
