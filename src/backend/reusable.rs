@@ -2,7 +2,7 @@ use crate::backend::task::Data;
 use crate::promise::MapPromise;
 use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise};
 use parking_lot::Mutex;
-use std::any::{Any, type_name};
+use std::any::{type_name, Any};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
