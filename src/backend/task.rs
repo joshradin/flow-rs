@@ -5,9 +5,9 @@ use crate::backend::reusable::Reusable;
 use crate::backend::task::private::Sealed;
 use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise};
 use crate::promise::{IntoPromise, MapPromise};
-use crossbeam::channel::{Receiver, RecvError, SendError, Sender, bounded};
+use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
 use parking_lot::Mutex;
-use std::any::{Any, TypeId, type_name};
+use std::any::{type_name, Any, TypeId};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
@@ -41,7 +41,7 @@ impl TaskId {
 }
 
 /// This is the data that is used
-pub type Data = Box<dyn Any + Send>;
+pub type Data = Box<dyn Any + Send + Sync>;
 
 /// A backend task
 pub struct BackendTask {
@@ -72,8 +72,8 @@ impl BackendTask {
         action: A,
     ) -> BackendTask
     where
-        I: Send,
-        O: Send,
+        I: Send + Sync,
+        O: Send + Sync,
         A: Action<Input = I, Output = O> + 'static,
     {
         let id = TaskId::new();
@@ -210,7 +210,7 @@ impl<T> SendOutputAction<T> {
     }
 }
 
-impl<T: Send + 'static> Action for SendOutputAction<T> {
+impl<T: Send + Sync + 'static> Action for SendOutputAction<T> {
     type Input = T;
     type Output = ();
 
@@ -380,7 +380,7 @@ pub struct ReusableOutput<T: 'static + Send + Clone>(PhantomData<T>);
 
 impl<T: 'static + Send + Clone> Sealed for ReusableOutput<T> {}
 
-impl<T: 'static + Send + Clone> AsOutputFlavor for ReusableOutput<T> {
+impl<T: 'static + Send + Sync + Clone> AsOutputFlavor for ReusableOutput<T> {
     type Data = T;
 
     fn to_output(self, id: TaskId) -> Output {
@@ -429,7 +429,7 @@ pub struct Output {
 }
 
 impl Output {
-    pub fn make_reusable<T: Send + Clone + 'static>(&mut self) -> Result<(), TaskError> {
+    pub fn make_reusable<T: Send + Sync + Clone + 'static>(&mut self) -> Result<(), TaskError> {
         if TypeId::of::<T>() != self.output_ty {
             return Err(TaskError::UnexpectedType {
                 expected: self.output_ty_str,
@@ -453,12 +453,12 @@ impl Output {
     }
 }
 
-fn create_reusable<T: Send + Clone + 'static>() -> (
-    Reusable,
+fn create_reusable<T: Send + Sync + Clone + 'static>() -> (
+    Reusable<'static, Data>,
     impl FnOnce(Data) -> Result<(), TaskError> + Send + 'static,
 ) {
     let (send, receive) = bounded::<T>(1);
-    let promise = Reusable::new(RecvPromise::new(receive));
+    let promise: Reusable<T> = Reusable::new(Box::new(RecvPromise::new(receive)));
 
     let f = move |data: Data| -> Result<(), TaskError> {
         let as_t = *data.downcast::<T>().expect("failed to downcast to");
@@ -466,7 +466,7 @@ fn create_reusable<T: Send + Clone + 'static>() -> (
             .map_err(|SendError(e)| SendError(Box::new(e) as Data))?;
         Ok(())
     };
-    (promise, f)
+    (promise.to_data(), f)
 }
 
 struct SetOutputFn(Box<dyn FnOnce(Data) -> Result<(), TaskError> + Send>);
@@ -541,7 +541,7 @@ enum OutputKind {
     /// used when the output can only be used once
     Once(Option<BoxPromise<'static, Data>>),
     /// Used when the output can be used multiple times
-    Reusable(Reusable),
+    Reusable(Reusable<'static, Data>),
 }
 
 #[derive(Debug, Error)]
@@ -578,7 +578,7 @@ pub(crate) mod test_fixtures {
     use crate::backend::task::{Data, Input, InputFlavor, InputKind, InputSource, TaskError};
     use crate::promise::MapPromise;
     use crate::promise::{BoxPromise, Just};
-    use std::any::{TypeId, type_name};
+    use std::any::{type_name, TypeId};
 
     /// Used for mocking a task input
     pub struct MockTaskInput<T>(pub T);
@@ -589,7 +589,7 @@ pub(crate) mod test_fixtures {
         }
     }
 
-    impl<T: Send + 'static> InputSource<MockTaskInput<T>> for Input {
+    impl<T: Send + Sync + 'static> InputSource<MockTaskInput<T>> for Input {
         type Data = T;
 
         fn use_as_input_source(&mut self, other: MockTaskInput<T>) -> Result<(), TaskError> {

@@ -50,8 +50,8 @@ impl<I: Send, O: Send> Flow<I, O> {
         step: A,
     ) -> StepReference<AI, AO>
     where
-        AI: Send + 'static,
-        AO: Send + 'static,
+        AI: Send + Sync + 'static,
+        AO: Send + Sync + 'static,
         A::Action: 'static,
     {
         let action = step.into_action();
@@ -124,7 +124,7 @@ impl<I, O> StepReference<I, O> {
     /// Makes this step reusable if it hasn't already been used as input
     pub fn reusable(self) -> Result<ReusableStep<Self>, FlowError>
     where
-        O: Clone + Send + 'static,
+        O: Clone + Sync + Send + 'static,
     {
         let id = self.id;
         transaction_mut(&self.backend, |backend| {
