@@ -70,16 +70,13 @@ impl TaskOrdering {
                 .max();
             let mut level = match max_level {
                 Some(max_level) => max_level + 1,
-                None => {
-                    levels
-                        .iter()
-                        .filter_map(|(level, idxs)| -> Option<usize> {
-                            if idxs.len() < w { Some(*level) } else { None }
-                        })
-                        .min()
-                        .unwrap_or(0)
-                }
-
+                None => levels
+                    .iter()
+                    .filter_map(|(level, idxs)| -> Option<usize> {
+                        if idxs.len() < w { Some(*level) } else { None }
+                    })
+                    .min()
+                    .unwrap_or(0),
             };
             while levels.get(&level).map(|s| s.len()) == Some(w) {
                 level += 1
@@ -273,9 +270,11 @@ mod tests {
             SingleOutput::new(),
             action(|_: ()| "hello"),
         );
-        assert!(matches!(b.output_mut().make_reusable::<isize>(), Err(TaskError::UnexpectedType { .. })));
+        assert!(matches!(
+            b.output_mut().make_reusable::<isize>(),
+            Err(TaskError::UnexpectedType { .. })
+        ));
         assert!(matches!(b.output_mut().make_reusable::<&str>(), Ok(())));
-
     }
 
     #[test]

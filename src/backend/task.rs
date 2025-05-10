@@ -2,19 +2,18 @@
 
 use crate::action::{Action, BoxAction, Runnable};
 use crate::backend::reusable::Reusable;
+use crate::backend::task::private::Sealed;
 use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise};
 use crate::promise::{IntoPromise, MapPromise};
-use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
+use crossbeam::channel::{Receiver, RecvError, SendError, Sender, bounded};
 use parking_lot::Mutex;
-use std::any::{type_name, Any, TypeId};
+use std::any::{Any, TypeId, type_name};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
-use crate::backend::task::private::Sealed;
-use crate::Void;
 
 static TASK_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -107,8 +106,6 @@ impl BackendTask {
     pub fn dependencies(&self) -> &HashSet<TaskId> {
         self.input.dependencies()
     }
-
-
 
     /// Runs this task
     pub fn run(&mut self) -> Result<(), TaskError> {
@@ -277,8 +274,6 @@ impl Input {
         }
     }
 
-
-
     /// Gets the list of task id dependencies for this task
     pub fn dependencies(&self) -> &HashSet<TaskId> {
         &self.task_dependencies
@@ -301,7 +296,7 @@ impl Input {
     }
 }
 
-pub trait AsOutputFlavor : Sealed {
+pub trait AsOutputFlavor: Sealed {
     type Data: 'static;
 
     fn to_output(self, id: TaskId) -> Output;
@@ -458,7 +453,10 @@ impl Output {
     }
 }
 
-fn create_reusable<T: Send + Clone + 'static>() -> (Reusable, impl FnOnce(Data) -> Result<(), TaskError> + Send + 'static) {
+fn create_reusable<T: Send + Clone + 'static>() -> (
+    Reusable,
+    impl FnOnce(Data) -> Result<(), TaskError> + Send + 'static,
+) {
     let (send, receive) = bounded::<T>(1);
     let promise = Reusable::new(RecvPromise::new(receive));
 
@@ -580,7 +578,7 @@ pub(crate) mod test_fixtures {
     use crate::backend::task::{Data, Input, InputFlavor, InputKind, InputSource, TaskError};
     use crate::promise::MapPromise;
     use crate::promise::{BoxPromise, Just};
-    use std::any::{type_name, TypeId};
+    use std::any::{TypeId, type_name};
 
     /// Used for mocking a task input
     pub struct MockTaskInput<T>(pub T);
@@ -621,7 +619,6 @@ pub(crate) mod test_fixtures {
 mod private {
     pub trait Sealed {}
 }
-
 
 #[cfg(test)]
 mod tests {

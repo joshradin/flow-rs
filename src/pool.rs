@@ -2,13 +2,13 @@
 
 use crate::promise::{GetPromise, Just, PollPromise, Promise};
 use crossbeam::atomic::AtomicCell;
-use crossbeam::channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
+use crossbeam::channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -312,7 +312,6 @@ impl Debug for ThreadPool {
 }
 
 impl WorkerPool for ThreadPool {
-
     fn max_size(&self) -> usize {
         self.inner.lock().max_size
     }
@@ -324,10 +323,7 @@ impl WorkerPool for ThreadPool {
         let mut inner = self.inner.lock();
         inner.submit_callable(f)
     }
-
-
 }
-
 
 /// A thread pool promise
 pub struct ThreadPoolPromise<T: Send> {

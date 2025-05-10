@@ -173,7 +173,7 @@ impl<'lf, T: Send + 'lf> PromiseSet<'lf, T> {
         }
     }
 
-    pub fn insert<P: Promise<Output=T> + 'lf>(&mut self, p: P) {
+    pub fn insert<P: Promise<Output = T> + 'lf>(&mut self, p: P) {
         self.promises.push(Box::new(p));
     }
 }

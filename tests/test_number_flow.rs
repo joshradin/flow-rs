@@ -5,28 +5,32 @@ use test_log::test;
 /// This example flow will first accept a list of integer, get the square of all of the integers,
 /// then sum that. Finally, it will return a list of all the integers with the sum added to each.
 #[test]
-fn test_concurrency() {
+fn test_concurrency() -> Result<(), FlowError> {
     let mut flow: Flow<Vec<i32>, Vec<i32>> = Flow::new();
-    let f= flow.create("empty", || {});
-    let f= flow.create("empty", || { Out(1_i32) });
-
     let test_data = Vec::from_iter(0..32);
+    let ref f = flow.create("init", move || test_data)
+        .reusable()?;
 
-    let mut squares = vec![];
+    let mut squares = Funnel::<i32>::new();
     for i in 0..test_data.len() {
-        let mut step_ref = flow.create(format!("square[{i}]"), action(|In(i): In<i32>| Out(i * i)));
-        // step_ref.flows_from(flow.input().nth(i));
-        squares.push(step_ref);
+        let get_nth = f.flows_into(flow.create(format!("get[{i}]"), |v: Vec<i32>| v[i]))?;
+        let step_ref =
+            get_nth.flows_into(flow.create(format!("square[{i}]"), action(|i| i * i)))?;
+
+        step_ref.flows_into(&mut squares);
     }
 
-    let sum = flow.create(
+
+
+
+    let sum = squares.flow_into(flow.create(
         "sum",
-        action(|In(i): In<Vec<i32>>| -> Out<i32> { Out(i.iter().sum()) }),
-    );
+        action(|i: Vec<i32>| -> i32 { i.iter().sum() }),
+    ));
 
     let mut final_sums = vec![];
     for i in 0..test_data.len() {
-        let mut step_ref = flow.create(
+        let step_ref = flow.create(
             format!("addSum[{i}]"),
             action(|In((i, sum)): In<(i32, i32)>| Out(i + sum)),
         );

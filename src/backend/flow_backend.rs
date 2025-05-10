@@ -10,7 +10,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
-use tracing::{debug, debug_span, error_span, Span};
+use tracing::{Span, debug, debug_span, error_span};
 
 /// Executes flow
 #[derive(Debug)]
@@ -41,6 +41,16 @@ impl<P: WorkerPool> FlowBackend<P> {
     /// Gets a mutable reference to a task by id
     pub fn get_mut(&mut self, task_id: TaskId) -> Option<&mut BackendTask> {
         self.tasks.get_mut(&task_id)
+    }
+
+    /// Gets two mutable reference to tasks by id, if the ids are disjoint
+    pub fn get_mut_disjoint(
+        &mut self,
+        task_id_1: TaskId,
+        task_id_2: TaskId,
+    ) -> Option<(&mut BackendTask, &mut BackendTask)> {
+        let [a, b] = self.tasks.get_disjoint_mut([&task_id_1, &task_id_2]);
+        a.zip(b)
     }
 
     /// Add a backend listener
