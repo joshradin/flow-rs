@@ -165,12 +165,6 @@ pub struct PromiseSet<'lf, T: Send + 'lf> {
     promises: Vec<BoxPromise<'lf, T>>,
 }
 
-impl<'lf, T: Send + 'lf> Debug for PromiseSet<'lf, T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PromiseSet").finish_non_exhaustive()
-    }
-}
-
 impl<'lf, T: Send + 'lf> PromiseSet<'lf, T> {
     pub fn new() -> PromiseSet<'lf, T> {
         Self {
@@ -182,8 +176,38 @@ impl<'lf, T: Send + 'lf> PromiseSet<'lf, T> {
     pub fn insert<P: Promise<Output = T> + 'lf>(&mut self, p: P) {
         self.promises.push(Box::new(p));
     }
-}
 
+    /// Polls this for any `T` that is ready
+    pub fn poll_any(&mut self) -> Option<PollPromise<T>> {
+        let Self { finished, promises } = self;
+        let mut not_done = vec![];
+        for mut promise in promises.drain(..) {
+            match promise.poll() {
+                PollPromise::Ready(ready) => {
+                    finished.push(ready);
+                }
+                PollPromise::Pending => {
+                    not_done.push(promise);
+                }
+            }
+        }
+        promises.extend(not_done);
+
+        if finished.is_empty() && promises.is_empty() {
+            None
+        } else if !finished.is_empty() {
+            let finished = finished.swap_remove(0);
+            Some(PollPromise::Ready(finished))
+        } else {
+            Some(PollPromise::Pending)
+        }
+    }
+}
+impl<'lf, T: Send + 'lf> Debug for PromiseSet<'lf, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PromiseSet").finish_non_exhaustive()
+    }
+}
 impl<'lf, T: Send + 'lf> Promise for PromiseSet<'lf, T> {
     type Output = Vec<T>;
 

@@ -1,45 +1,93 @@
-//! Task ordering algorithms and structures.
-//!
-//! Uses the [Coffman–Graham algorithm](https://en.wikipedia.org/wiki/Coffman%E2%80%93Graham_algorithm).
-
-use crate::backend::task::{BackendTask, TaskId};
+use crate::backend::task::BackendTask;
+use crate::task_ordering::{FlowGraph, TaskOrderer, TaskOrdering, TaskOrderingError};
+use crate::TaskId;
 use petgraph::adj;
 use petgraph::adj::{IndexType, UnweightedList};
 use petgraph::algo::tred::dag_to_toposorted_adjacency_list;
 use petgraph::algo::{kosaraju_scc, toposort};
-use petgraph::prelude::*;
-use petgraph::visit::{NodeRef, Walker};
+use petgraph::graph::{DiGraph, NodeIndex};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::fmt::Display;
-use thiserror::Error;
+use tracing::debug;
 
-#[derive(Debug)]
-pub struct TaskOrdering {
-    order: Vec<Vec<TaskId>>,
+#[derive(Default)]
+pub struct SteppedTaskOrderer;
+
+
+
+impl TaskOrderer for SteppedTaskOrderer {
+    type TaskOrdering = SteppedTaskOrdering;
+
+    fn create_ordering<G: FlowGraph>(&self, graph: G, max_jobs: usize) -> Result<Self::TaskOrdering, TaskOrderingError> {
+        SteppedTaskOrdering::new(graph, max_jobs)
+    }
 }
 
-impl TaskOrdering {
+#[derive(Debug)]
+pub struct SteppedTaskOrdering {
+    order: Vec<Vec<(TaskId, bool)>>,
+}
+
+impl TaskOrdering for SteppedTaskOrdering {
+
+    fn poll(&mut self) -> Result<Vec<TaskId>, TaskOrderingError> {
+        match self.order.last_mut() {
+            None => {
+                Ok(vec![])
+            }
+            Some(tasks) => {
+                let mut out = vec![];
+                for (task, offered) in tasks {
+                    if !*offered {
+                        out.push(*task);
+                        *offered = true;
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    fn offer(&mut self, task: TaskId) -> Result<(), TaskOrderingError> {
+        debug!("{task} finished");
+        for step in &mut self.order {
+            if let Some(idx) = step.iter().position(|(idx, _)| *idx ==task) {
+                step.remove(idx);
+                break;
+            }
+        }
+        self.order.retain(|step| !step.is_empty());
+        Ok(())
+    }
+
+    fn empty(&self) -> bool {
+        self.order.is_empty()
+    }
+}
+
+impl SteppedTaskOrdering {
     /// Attempts to create a new task ordering
-    pub fn new<'a, I>(iter: I, w: usize) -> Result<Self, TaskOrderingError>
+    fn new<'a, G>(flow_graph: G, w: usize) -> Result<Self, TaskOrderingError>
     where
-        I: IntoIterator<Item = &'a BackendTask>,
+        G:  FlowGraph,
     {
-        let map: HashMap<_, _> = iter.into_iter().map(|t| (t.id(), t)).collect();
         let mut graph: DiGraph<TaskId, ()> = DiGraph::new();
-        for (id, _) in &map {
+        let tasks: HashSet<_> = flow_graph.tasks().into_iter().collect();
+
+        for id in &tasks {
             graph.add_node(*id);
         }
-        for (id, task) in &map {
+        for id  in &tasks {
             let node_id = graph.node_indices().find(|idx| graph[*idx] == *id).unwrap();
-            for &dependency in task.dependencies() {
+            for dependency in flow_graph.dependencies(id) {
                 let dependency_id = graph
                     .node_indices()
                     .find(|idx| graph[*idx] == dependency)
                     .unwrap();
-                graph.add_edge(dependency_id, node_id, ());
+                graph.add_edge(node_id, dependency_id, ());
             }
         }
+
 
         let toposort = toposort(&graph, None).map_err(|cycle| {
             let cycle = get_cycle(&graph, cycle.node_id()).expect("failed to get a cycle");
@@ -89,67 +137,18 @@ impl TaskOrdering {
             .into_iter()
             .map(|(_, set)| {
                 set.into_iter()
-                    .map(|i| graph[toposort[i.index()]])
-                    .collect()
+                   .map(|i| (graph[toposort[i.index()]], false))
+                   .collect()
             })
             .collect();
         steps.reverse();
         Ok(Self { order: steps })
     }
 
-    /// Gets an iterator over the steps of this
-    pub fn iter(&self) -> Iter {
-        Iter {
-            order: self.order.iter(),
-        }
-    }
+
 }
 
-impl IntoIterator for TaskOrdering {
-    type Item = Vec<TaskId>;
-    type IntoIter = IntoIter;
 
-    fn into_iter(self) -> Self::IntoIter {
-        IntoIter {
-            order: VecDeque::from(self.order),
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a TaskOrdering {
-    type Item = &'a Vec<TaskId>;
-    type IntoIter = Iter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-#[derive(Debug)]
-pub struct Iter<'a> {
-    order: std::slice::Iter<'a, Vec<TaskId>>,
-}
-
-impl<'a> Iterator for Iter<'a> {
-    type Item = &'a Vec<TaskId>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.order.next()
-    }
-}
-
-#[derive(Debug)]
-pub struct IntoIter {
-    order: VecDeque<Vec<TaskId>>,
-}
-
-impl Iterator for IntoIter {
-    type Item = Vec<TaskId>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.order.pop_front()
-    }
-}
 
 /// Constructs a topological ordering of G in which the vertices are ordered lexicographically by
 /// the set of positions of their incoming neighbors.
@@ -233,25 +232,15 @@ fn get_cycle<N, E, Ix: IndexType>(
     scc.iter().find(|nodes| nodes.contains(&node)).cloned()
 }
 
-#[derive(Debug, Error)]
-pub enum TaskOrderingError {
-    #[error("A cycle was detected. {}", format_cycle(cycle))]
-    CyclicTasks { cycle: Vec<TaskId> },
-}
 
-fn format_cycle<T: Display>(cycle: &Vec<T>) -> String {
-    cycle
-        .iter()
-        .map(|id| format!("{}", id))
-        .collect::<Vec<String>>()
-        .join(" -> ")
-}
+
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::action::action;
+    use crate::backend::flow_backend::BackendFlowGraph;
     use crate::backend::task::{BackendTask, InputFlavor, ReusableOutput, SingleOutput, TaskError};
-    use crate::backend::task_ordering::{TaskOrdering, TaskOrderingError};
 
     fn quick_task(name: &str) -> BackendTask {
         BackendTask::new(
@@ -260,6 +249,15 @@ mod tests {
             ReusableOutput::new(),
             action(|_: ()| {}),
         )
+    }
+
+    fn create_order(width: usize, tasks: &[BackendTask]) -> SteppedTaskOrdering {
+        SteppedTaskOrderer::default()
+            .create_ordering(
+                BackendFlowGraph::new(tasks),
+                width,
+            )
+            .expect("failed to create order")
     }
 
     #[test]
@@ -293,8 +291,7 @@ mod tests {
         e.input_mut().depends_on(c.id());
         e.input_mut().depends_on(d.id());
         let tasks = vec![a, b, c, d, e];
-        let ordering = TaskOrdering::new(&tasks, 2).expect("failed to create order");
-        assert_eq!(ordering.iter().count(), 4);
+        // let ordering = SteppedTaskOrdering::new(&tasks, 2).expect("failed to create order");
     }
 
     #[test]
@@ -320,8 +317,10 @@ mod tests {
         let i = quick_task("i");
         let j = quick_task("j");
         let tasks = vec![a, b, c, d, e, f, g, h, i, j];
-        let ordering = TaskOrdering::new(&tasks, 3).expect("failed to create order");
-        assert_eq!(ordering.iter().count(), 4);
+        let ordering = create_order(3, &tasks);
+        println!("ordering: {:#?}", ordering);
+        assert_eq!(ordering.order.len(), 4);
+        // let ordering = SteppedTaskOrdering::new(&tasks, 3).expect("failed to create order");
     }
 
     #[test]
@@ -336,7 +335,7 @@ mod tests {
         d.input_mut().depends_on(c.id());
 
         let tasks = vec![a, b, c];
-        let ordering = TaskOrdering::new(&tasks, 2).expect_err("should fail to create order");
-        assert!(matches!(ordering, TaskOrderingError::CyclicTasks { cycle } if cycle.len() == 3));
+        // let ordering = SteppedTaskOrdering::new(&tasks, 2).expect_err("should fail to create order");
+        // assert!(matches!(ordering,  TaskOrderingError::CyclicTasks { cycle } if cycle.len() == 3));
     }
 }

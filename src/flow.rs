@@ -1,37 +1,93 @@
 use crate::action::{Action, IntoAction};
 use crate::backend::flow_backend::{FlowBackend, FlowBackendError};
-use crate::backend::task::{BackendTask, Input, InputFlavor, InputSource, Output, SingleOutput, TaskError, TaskId, TypedOutput};
+use crate::backend::task::{
+    BackendTask, Input, InputSource, Output, SingleOutput, TaskError, TaskId, TypedOutput,
+};
 use crate::flow::private::Sealed;
-use crate::pool::ThreadPool;
+use crate::pool::{ThreadPool, WorkerPool};
+use crate::task_ordering::{DefaultTaskOrderer, SteppedTaskOrderer, TaskOrderer};
+use fortuples::fortuples;
 use parking_lot::RwLock;
 use static_assertions::{assert_impl_all, assert_not_impl_all};
 use std::any::TypeId;
 use std::marker::PhantomData;
 use std::ops::Index;
 use std::sync::{Arc, Weak};
-use fortuples::fortuples;
 use thiserror::Error;
 
-type StrongFlowBackend<P = ThreadPool> = Arc<RwLock<FlowBackend<P>>>;
-type WeakFlowBackend<P = ThreadPool> = Weak<RwLock<FlowBackend<P>>>;
+type StrongFlowBackend<T = DefaultTaskOrderer> = Arc<RwLock<FlowBackend<T>>>;
+type WeakFlowBackend<T = DefaultTaskOrderer> = Weak<RwLock<FlowBackend<T>>>;
+
+/// Builds a [`Flow`]
+pub struct FlowBuilder<I, O, T = DefaultTaskOrderer> {
+    pool: Option<ThreadPool>,
+    orderer: Option<T>,
+    _marker: PhantomData<(I, O)>,
+}
+
+impl<I, O> FlowBuilder<I, O> {
+    /// A flow builder
+    pub fn new() -> FlowBuilder<I, O> {
+        Self {
+            pool: None,
+            orderer: None,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<I, O, T> FlowBuilder<I, O, T> {
+    pub fn with_task_orderer<U: TaskOrderer>(self, orderer: U) -> FlowBuilder<I, O, U> {
+        FlowBuilder {
+            pool: self.pool,
+            orderer: Some(orderer),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<I: Send, O: Send, T: TaskOrderer + Default> FlowBuilder<I, O, T> {
+    pub fn build(self) -> Flow<I, O, T> {
+        let pool = self.pool.unwrap_or_default();
+        let orderer = self.orderer.unwrap_or_default();
+        Flow {
+            _marker: Default::default(),
+            backend: Arc::new(RwLock::new(FlowBackend::with_task_orderer_and_worker_pool(
+                orderer, pool,
+            ))),
+        }
+    }
+}
+
+impl FlowBuilder<(), (), ()> {}
 
 /// Create a flow graph, with an input and an ultimate output
 ///
 /// Flows are built from a set of tasks that can be run in a concurrent manner.
-pub struct Flow<I: Send = (), O: Send = ()> {
+pub struct Flow<
+    I: Send = (),
+    O: Send = (),
+    T: TaskOrderer = DefaultTaskOrderer,
+> {
     _marker: PhantomData<fn(I) -> O>,
-    backend: StrongFlowBackend,
+    backend: StrongFlowBackend<T>,
 }
 
 impl<I: Send, O: Send> Flow<I, O> {
     /// Creates a new flow
     pub fn new() -> Self {
+        let pool: ThreadPool = Default::default();
         Self {
             _marker: PhantomData,
-            backend: Arc::new(RwLock::new(FlowBackend::new())),
+            backend: Arc::new(RwLock::new(FlowBackend::with_task_orderer_and_worker_pool(
+                SteppedTaskOrderer::default(),
+                pool,
+            ))),
         }
     }
+}
 
+impl<I: Send, O: Send, T: TaskOrderer> Flow<I, O, T> {
     /// Gets a representation of the input of a flow
     pub fn input(&self) -> FlowInput<I> {
         todo!()
@@ -47,16 +103,15 @@ impl<I: Send, O: Send> Flow<I, O> {
         &mut self,
         name: impl AsRef<str>,
         step: A,
-    ) -> StepReference<AI, AO>
+    ) -> TaskReference<AI, AO, T>
     where
         AI: Send + Sync + 'static,
         AO: Send + Sync + 'static,
         A::Action: 'static,
     {
         let (input_flavor, action) = step.into_action();
-        let bk =
-            BackendTask::new::<_, AI, AO>(name, input_flavor, SingleOutput::new(), action);
-        let s = StepReference::<AI, AO>::new(&bk, &self.backend);
+        let bk = BackendTask::new::<_, AI, AO>(name, input_flavor, SingleOutput::new(), action);
+        let s = TaskReference::<AI, AO, T>::new(&bk, &self.backend);
         self.backend.write().add(bk);
         s
     }
@@ -102,8 +157,8 @@ pub struct FlowOutput<I> {
 }
 
 /// A reference to a step
-pub struct StepReference<I, O> {
-    backend: WeakFlowBackend,
+pub struct TaskReference<I, O, T: TaskOrderer = DefaultTaskOrderer> {
+    backend: WeakFlowBackend<T>,
     id: TaskId,
     name: String,
     input_ty: TypeId,
@@ -111,8 +166,8 @@ pub struct StepReference<I, O> {
     _marker: PhantomData<fn(I) -> O>,
 }
 
-impl<I, O> StepReference<I, O> {
-    fn new(backend_task: &BackendTask, cl: &StrongFlowBackend) -> Self {
+impl<I, O, TO: TaskOrderer> TaskReference<I, O, TO> {
+    fn new(backend_task: &BackendTask, cl: &StrongFlowBackend<TO>) -> Self {
         Self {
             backend: Arc::downgrade(cl),
             id: backend_task.id(),
@@ -166,13 +221,13 @@ impl<I, O> StepReference<I, O> {
     }
 }
 
-fn transaction_mut<T, F: FnOnce(&mut FlowBackend) -> T>(weak: &WeakFlowBackend, f: F) -> T {
+fn transaction_mut<T, U: TaskOrderer,  F: FnOnce(&mut FlowBackend<U>) -> T>(weak: &WeakFlowBackend<U>, f: F) -> T {
     let upgrade = weak.upgrade().expect("Weak instance lost");
     let mut backend = upgrade.write();
     f(&mut backend)
 }
 
-impl<I, O> Sealed for StepReference<I, O> {}
+impl<I, O> Sealed for TaskReference<I, O> {}
 
 #[derive(Debug, Error)]
 pub enum FlowError {
@@ -181,13 +236,13 @@ pub enum FlowError {
     #[error(transparent)]
     BackendFlowError(#[from] FlowBackendError),
     #[error("Tasks are not disjoint")]
-    NondisjointedTasks
+    NondisjointedTasks,
 }
 
 /// Used for wrapping a step with a re-usable output.
 pub struct Funneled<T>(T);
 
-impl<T, R: Clone + Send + Sync + 'static> Funneled<StepReference<T, R>> {
+impl<T, R: Clone + Send + Sync + 'static> Funneled<TaskReference<T, R>> {
     pub fn reusable(self) -> Result<Reusable<Self>, FlowError> {
         let id = self.0.id;
         transaction_mut(&self.0.backend, |backend| {
@@ -202,9 +257,9 @@ impl<T, R: Clone + Send + Sync + 'static> Funneled<StepReference<T, R>> {
 /// Used for wrapping a step with a re-usable output.
 pub struct Reusable<T>(T);
 
-impl<I, T: Clone> Clone for Reusable<StepReference<I, T>> {
+impl<I, T: Clone> Clone for Reusable<TaskReference<I, T>> {
     fn clone(&self) -> Self {
-        Reusable(StepReference {
+        Reusable(TaskReference {
             backend: self.0.backend.clone(),
             id: self.0.id,
             name: self.0.name.clone(),
@@ -215,9 +270,9 @@ impl<I, T: Clone> Clone for Reusable<StepReference<I, T>> {
     }
 }
 
-impl<I, T: Clone> Clone for Reusable<Funneled<StepReference<I, T>>> {
+impl<I, T: Clone> Clone for Reusable<Funneled<TaskReference<I, T>>> {
     fn clone(&self) -> Self {
-        Reusable(Funneled(StepReference {
+        Reusable(Funneled(TaskReference {
             backend: self.0.0.backend.clone(),
             id: self.0.0.id,
             name: self.0.0.name.clone(),
@@ -228,42 +283,43 @@ impl<I, T: Clone> Clone for Reusable<Funneled<StepReference<I, T>>> {
     }
 }
 
-impl<I, T: Clone> Reusable<StepReference<I, T>> {
-    pub(crate) fn from_step_reference(step: StepReference<I, T>) -> Self {
+impl<I, T: Clone> Reusable<TaskReference<I, T>> {
+    pub(crate) fn from_step_reference(step: TaskReference<I, T>) -> Self {
         Self(step)
     }
 }
 
-impl<I, T: Clone> Reusable<Funneled<StepReference<I, T>>> {
-    pub(crate) fn from_funnelled(step: Funneled<StepReference<I, T>>) -> Self {
+impl<I, T: Clone> Reusable<Funneled<TaskReference<I, T>>> {
+    pub(crate) fn from_funnelled(step: Funneled<TaskReference<I, T>>) -> Self {
         Self(step)
     }
 }
 
-impl<I, T: Clone> AsRef<Self> for Reusable<StepReference<I, T>> {
+impl<I, T: Clone> AsRef<Self> for Reusable<TaskReference<I, T>> {
     fn as_ref(&self) -> &Self {
         self
     }
 }
 
-impl<I, T: Clone> AsMut<Self> for Reusable<StepReference<I, T>> {
+impl<I, T: Clone> AsMut<Self> for Reusable<TaskReference<I, T>> {
     fn as_mut(&mut self) -> &mut Self {
         self
     }
 }
 
-impl<I, T: Clone> AsRef<Self> for Reusable<Funneled<StepReference<I, T>>> {
+impl<I, T: Clone> AsRef<Self> for Reusable<Funneled<TaskReference<I, T>>> {
     fn as_ref(&self) -> &Self {
         self
     }
 }
 
-impl<I, T: Clone> AsMut<Self> for Reusable<Funneled<StepReference<I, T>>> {
+impl<I, T: Clone> AsMut<Self> for Reusable<Funneled<TaskReference<I, T>>> {
     fn as_mut(&mut self) -> &mut Self {
         self
     }
 }
 
+/// Allows for generalization of types that can flow their data into another
 #[diagnostic::on_unimplemented(message = "`{Self}` can not flow into `{Other}`")]
 pub trait FlowsInto<Other>: Sized {
     type Out;
@@ -273,8 +329,8 @@ pub trait FlowsInto<Other>: Sized {
 
 fn try_set_flow<T, U>(this: &T, other: &U) -> Result<(), FlowError>
 where
-    T: StepRef,
-    U: StepRef,
+    T: TaskRefWithBackend,
+    U: TaskRefWithBackend,
 {
     let weak = this.backend();
     let this_id = *this.id();
@@ -287,20 +343,22 @@ where
     Ok(())
 }
 
-fn try_set_flow_all<
-    Tuple,
-    T, U, const N: usize, const M: usize>(these: [&T; N], other: &U) -> Result<(), FlowError>
+fn try_set_flow_all<Tuple, T, U, const N: usize, const M: usize>(
+    these: [&T; N],
+    other: &U,
+) -> Result<(), FlowError>
 where
     Tuple: Send + 'static,
-    T: StepRef,
-    U: StepRef,
-    Input: for<'a> InputSource<(PhantomData<Tuple>, [&'a mut Output; N]), Data=Tuple, >
+    T: TaskRefWithBackend,
+    U: TaskRefWithBackend,
+    Input: for<'a> InputSource<(PhantomData<Tuple>, [&'a mut Output; N]), Data = Tuple>,
 {
     assert_eq!(N + 1, M, "M must be N + 1");
     let weak = other.backend();
     let this_id = these.map(|this| *this.id());
     let other_id = *other.id();
-    let all: [TaskId; M] = this_id.into_iter()
+    let all: [TaskId; M] = this_id
+        .into_iter()
         .chain([other_id])
         .collect::<Vec<_>>()
         .try_into()
@@ -311,17 +369,18 @@ where
             panic!("Unexpected chunk size");
         };
         let task_outputs = these.each_mut().map(|t| t.output_mut());
-        other.input_mut().set_source((PhantomData::<Tuple>, task_outputs))?;
+        other
+            .input_mut()
+            .set_source((PhantomData::<Tuple>, task_outputs))?;
         Ok(())
     })?;
     Ok(())
 }
 
-
 impl<T, U> FlowsInto<U> for T
 where
-    T: StepRef<Out = U::In>,
-    U: StepRef,
+    T: TaskRefWithBackend<Out = U::In>,
+    U: TaskRefWithBackend,
 {
     type Out = Result<U, FlowError>;
 
@@ -333,7 +392,7 @@ where
 
 impl<T, I, U> FlowsInto<U> for Vec<T>
 where
-    T: StepRef<Out = I>,
+    T: TaskRefWithBackend<Out = I>,
     U: FunneledStepRef<In: FromIterator<I>>,
 {
     type Out = Result<U, FlowError>;
@@ -350,8 +409,8 @@ fortuples! {
     #[tuples::min_size(1)]
     impl<O> FlowsInto<O> for #Tuple
         where
-            #(#Member: StepRef<Out: Send + Sync + 'static>,)*
-            O: StepRef<In=(#(#Member::Out,)*)>,
+            #(#Member: TaskRefWithBackend<Out: Send + Sync + 'static>,)*
+            O: TaskRefWithBackend<In=(#(#Member::Out,)*)>,
     {
         type Out = Result<O, FlowError>;
 
@@ -379,13 +438,17 @@ fortuples! {
     }
 }
 
+/// A type that has an associated task id
+pub trait TaskRef {
+    /// Gets the id of this task ref
+    fn id(&self) -> &TaskId;
+}
 
-trait StepRef {
+trait TaskRefWithBackend: TaskRef {
     type In;
     type Out;
 
     fn backend(&self) -> &WeakFlowBackend;
-    fn id(&self) -> &TaskId;
 }
 
 struct AnyStepRef<I, O>(WeakFlowBackend, TaskId, PhantomData<(I, O)>);
@@ -396,76 +459,87 @@ impl<I, O> AnyStepRef<I, O> {
     }
 }
 
-impl<I, O> StepRef for AnyStepRef<I, O> {
+impl<I, O> TaskRefWithBackend for AnyStepRef<I, O> {
     type In = I;
     type Out = O;
 
     fn backend(&self) -> &WeakFlowBackend {
         &self.0
     }
+}
 
+impl<I, O> TaskRef for AnyStepRef<I, O> {
     fn id(&self) -> &TaskId {
         &self.1
     }
 }
-fn to_any_step_ref<T: StepRef>(step_ref: &T) ->AnyStepRef<T::In, T::Out> {
+
+fn to_any_step_ref<T: TaskRefWithBackend>(step_ref: &T) -> AnyStepRef<T::In, T::Out> {
     AnyStepRef(step_ref.backend().clone(), *step_ref.id(), PhantomData)
 }
 
-impl<I, O> StepRef for StepReference<I, O> {
+impl<I, O> TaskRefWithBackend for TaskReference<I, O> {
     type In = I;
     type Out = O;
 
     fn backend(&self) -> &WeakFlowBackend {
         &self.backend
     }
+}
 
+impl<I, O> TaskRef for TaskReference<I, O> {
     fn id(&self) -> &TaskId {
         &self.id
     }
 }
 
-impl<T: StepRef> StepRef for Reusable<T> {
-    type In = <T as StepRef>::In;
-    type Out = <T as StepRef>::Out;
+impl<T: TaskRefWithBackend> TaskRefWithBackend for Reusable<T> {
+    type In = <T as TaskRefWithBackend>::In;
+    type Out = <T as TaskRefWithBackend>::Out;
 
     fn backend(&self) -> &WeakFlowBackend {
         self.0.backend()
     }
+}
 
+impl<T: TaskRefWithBackend> TaskRef for Reusable<T> {
     fn id(&self) -> &TaskId {
         self.0.id()
     }
 }
 
-impl<T: StepRef> StepRef for &Reusable<T> {
-    type In = <T as StepRef>::In;
-    type Out = <T as StepRef>::Out;
+impl<T: TaskRefWithBackend> TaskRefWithBackend for &Reusable<T> {
+    type In = <T as TaskRefWithBackend>::In;
+    type Out = <T as TaskRefWithBackend>::Out;
 
     fn backend(&self) -> &WeakFlowBackend {
         self.0.backend()
     }
+}
 
+impl<T: TaskRefWithBackend> TaskRef for &Reusable<T> {
     fn id(&self) -> &TaskId {
         self.0.id()
     }
 }
 
-impl<T: StepRef> StepRef for Funneled<T> {
-    type In = <T as StepRef>::In;
-    type Out = <T as StepRef>::Out;
+impl<T: TaskRefWithBackend> TaskRefWithBackend for Funneled<T> {
+    type In = <T as TaskRefWithBackend>::In;
+    type Out = <T as TaskRefWithBackend>::Out;
 
     fn backend(&self) -> &WeakFlowBackend {
         self.0.backend()
     }
+}
 
+impl<T: TaskRefWithBackend> TaskRef for Funneled<T> {
     fn id(&self) -> &TaskId {
         self.0.id()
     }
 }
 
-trait FunneledStepRef: StepRef {}
-impl<T: StepRef> FunneledStepRef for Funneled<T> {}
+trait FunneledStepRef: TaskRefWithBackend {}
+impl<T: TaskRefWithBackend> FunneledStepRef for Funneled<T> {}
 impl<T: FunneledStepRef> FunneledStepRef for Reusable<T> {}
 
 mod private {
@@ -480,36 +554,28 @@ mod tests {
 
     pub struct Move<T>(T);
 
-    assert_impl_all!(StepReference<(), Move<i32>>: FlowsInto<StepReference<Move<i32>, ()>>);
+    assert_impl_all!(TaskReference<(), Move<i32>>: FlowsInto<TaskReference<Move<i32>, ()>>);
 
+    assert_impl_all!((TaskReference<(), Move<i32>>, TaskReference<(), Move<f32>>):
+        FlowsInto<TaskReference<(Move<i32>, Move<f32>), ()>>);
 
-    assert_impl_all!((StepReference<(), Move<i32>>, StepReference<(), Move<f32>>):
-        FlowsInto<StepReference<(Move<i32>, Move<f32>), ()>>);
+    assert_impl_all!(TaskReference<(), i32>: FlowsInto<Reusable<TaskReference<i32, ()>>>);
+    assert_impl_all!(TaskReference<(), i32>: FlowsInto<Funneled<TaskReference<i32, ()>>>);
+    assert_impl_all!(TaskReference<(), i32>: FlowsInto<Reusable<Funneled<TaskReference<i32, ()>>>>);
+    assert_impl_all!(TaskReference<(), i32>: FlowsInto<&'static Reusable<TaskReference<i32, ()>>>);
 
+    assert_impl_all!(Reusable<TaskReference<(), i32>>: FlowsInto<&'static Reusable<TaskReference<i32, ()>>>);
+    assert_impl_all!(Reusable<TaskReference<(), i32>>: FlowsInto<Reusable<TaskReference<i32, ()>>>);
+    assert_impl_all!(Reusable<TaskReference<(), i32>>: FlowsInto<TaskReference<i32, ()>>);
+    assert_impl_all!(&Reusable<TaskReference<(), i32>>: FlowsInto<&'static Reusable<TaskReference<i32, ()>>>);
+    assert_impl_all!(&Reusable<TaskReference<(), i32>>: FlowsInto<Reusable<TaskReference<i32, ()>>>);
+    assert_impl_all!(&Reusable<TaskReference<(), i32>>: FlowsInto<TaskReference<i32, ()>>);
 
-    assert_impl_all!(StepReference<(), i32>: FlowsInto<Reusable<StepReference<i32, ()>>>);
-    assert_impl_all!(StepReference<(), i32>: FlowsInto<Funneled<StepReference<i32, ()>>>);
-    assert_impl_all!(StepReference<(), i32>: FlowsInto<Reusable<Funneled<StepReference<i32, ()>>>>);
-    assert_impl_all!(StepReference<(), i32>: FlowsInto<&'static Reusable<StepReference<i32, ()>>>);
-
-
-
-    assert_impl_all!(Reusable<StepReference<(), i32>>: FlowsInto<&'static Reusable<StepReference<i32, ()>>>);
-    assert_impl_all!(Reusable<StepReference<(), i32>>: FlowsInto<Reusable<StepReference<i32, ()>>>);
-    assert_impl_all!(Reusable<StepReference<(), i32>>: FlowsInto<StepReference<i32, ()>>);
-    assert_impl_all!(&Reusable<StepReference<(), i32>>: FlowsInto<&'static Reusable<StepReference<i32, ()>>>);
-    assert_impl_all!(&Reusable<StepReference<(), i32>>: FlowsInto<Reusable<StepReference<i32, ()>>>);
-    assert_impl_all!(&Reusable<StepReference<(), i32>>: FlowsInto<StepReference<i32, ()>>);
-
-
-    assert_not_impl_all!(StepReference<(), i32>: FlowsInto<StepReference<(), ()>>);
-    assert_not_impl_all!(&StepReference<(), i32>: FlowsInto<StepReference<i32, ()>>);
-    assert_not_impl_all!(&StepReference<(), i32>: FlowsInto<&'static StepReference<i32, ()>>);
-    assert_not_impl_all!((StepReference<(), Move<i32>>, StepReference<(), Move<i32>>):
-        FlowsInto<StepReference<(Move<i32>, Move<f32>), ()>>);
-
-
-
+    assert_not_impl_all!(TaskReference<(), i32>: FlowsInto<TaskReference<(), ()>>);
+    assert_not_impl_all!(&TaskReference<(), i32>: FlowsInto<TaskReference<i32, ()>>);
+    assert_not_impl_all!(&TaskReference<(), i32>: FlowsInto<&'static TaskReference<i32, ()>>);
+    assert_not_impl_all!((TaskReference<(), Move<i32>>, TaskReference<(), Move<i32>>):
+        FlowsInto<TaskReference<(Move<i32>, Move<f32>), ()>>);
 
     #[test]
     fn test_type_checking_non_clone() {
