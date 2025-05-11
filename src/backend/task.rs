@@ -34,7 +34,7 @@ impl Display for TaskId {
 
 impl TaskId {
     /// Creates a new task id
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let id = TASK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         if id == 0 {
             panic!("task ID overflowed");

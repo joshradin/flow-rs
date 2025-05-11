@@ -1,12 +1,15 @@
 use flow_rs::action::action;
 use flow_rs::*;
 use test_log::test;
+use flow_rs::task_ordering::SteppedTaskOrderer;
 
 /// This example flow will first accept a list of integer, get the square of all of the integers,
 /// then sum that. Finally, it will return a list of all the integers with the sum added to each.
 #[test]
 fn test_concurrency() -> Result<(), FlowError> {
-    let mut flow: Flow<Vec<i32>, Vec<i32>> = Flow::new();
+    let mut flow = FlowBuilder::new()
+        .with_task_orderer(SteppedTaskOrderer::default())
+        .build();
     let test_data = Vec::from_iter(0..32);
 
     let ref f = {
@@ -47,7 +50,7 @@ fn test_concurrency() -> Result<(), FlowError> {
     // flow.output().flows_from(final_sums);
 
     let expected = expected_result(&test_data);
-    let result = flow
+    let result: Vec<i32> = flow
         .apply(test_data)
         .expect("failed to run flow to produce");
 

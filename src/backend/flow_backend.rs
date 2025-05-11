@@ -1,21 +1,23 @@
 //! Actual flow backend
 
 use crate::backend::task::{BackendTask, TaskError, TaskId};
-use crate::backend::task_ordering::{TaskOrdering, TaskOrderingError};
 use crate::pool::{ThreadPool, WorkerPool};
-use crate::promise::{GetPromise, MapPromise, PromiseSet};
+use crate::promise::{GetPromise, MapPromise, PollPromise, PromiseSet};
+use crate::task_ordering::{DefaultTaskOrderer, FlowGraph};
+use crate::task_ordering::{TaskOrderer, TaskOrdering, TaskOrderingError};
 use petgraph::visit::NodeRef;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
-use tracing::{debug, debug_span, error_span, Span};
+use tracing::{debug, debug_span, error_span, info, Span};
 
 /// Executes flow
 #[derive(Debug)]
-pub struct FlowBackend<P: WorkerPool = ThreadPool> {
+pub struct FlowBackend<T: TaskOrderer = DefaultTaskOrderer, P: WorkerPool = ThreadPool> {
     worker_pool: P,
+    orderer: T,
     listeners: Vec<Box<dyn FlowBackendListener>>,
     tasks: HashMap<TaskId, BackendTask>,
 }
@@ -27,7 +29,24 @@ impl FlowBackend {
     }
 }
 
-impl<P: WorkerPool> FlowBackend<P> {
+impl<P: WorkerPool> FlowBackend<DefaultTaskOrderer, P> {
+    /// Creates the new flow backend with the given worker pool
+    pub fn with_worker_pool(worker_pool: P) -> Self {
+        Self::with_task_orderer_and_worker_pool(DefaultTaskOrderer::default(), worker_pool)
+    }
+}
+
+impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
+    /// Creates the new flow backend with the given worker pool
+    pub fn with_task_orderer_and_worker_pool(task_orderer: T, worker_pool: P) -> Self {
+        Self {
+            worker_pool,
+            orderer: task_orderer,
+            listeners: vec![],
+            tasks: HashMap::new(),
+        }
+    }
+
     /// Add a task to this flow backend
     pub fn add(&mut self, task: BackendTask) {
         self.tasks.insert(task.id(), task);
@@ -76,18 +95,16 @@ impl<P: WorkerPool> FlowBackend<P> {
         <[&mut BackendTask; N]>::try_from(ret).ok()
     }
 
-
     /// Add a backend listener
     pub fn add_listener<L: FlowBackendListener + 'static>(&mut self, listener: L) {
         self.listeners.push(Box::new(listener));
     }
 
     /// calculates the task ordering for this flow backend
-    fn ordering(&self) -> Result<TaskOrdering, FlowBackendError> {
-        Ok(TaskOrdering::new(
-            self.tasks.values(),
-            self.worker_pool.max_size(),
-        )?)
+    fn ordering(&self) -> Result<T::TaskOrdering, FlowBackendError> {
+        let flow_graph = BackendFlowGraph::new(self.tasks.values());
+        let ordering = self.orderer.create_ordering(flow_graph, self.worker_pool.max_size())?;
+        Ok(ordering)
     }
 
     /// Executes this flow
@@ -98,59 +115,89 @@ impl<P: WorkerPool> FlowBackend<P> {
                 self.tasks.len()
             );
             let instant = Instant::now();
-            let ordering = self.ordering()?;
+            let mut ordering = self.ordering()?;
             debug!("Task ordering took: {:.3}ms", instant.elapsed().as_millis());
 
             // let mut tasks = std::mem::replace(&mut self.tasks, Default::default());
             let listeners = Arc::new(self.listeners.drain(..).collect::<Vec<_>>());
+            let mut promises = PromiseSet::new();
 
-            for (step, task_ids) in ordering.into_iter().enumerate() {
-                debug_span!("step", step = step).in_scope(|| -> Result<(), FlowBackendError> {
-                    debug!("executing {} tasks: {:?}", task_ids.len(), task_ids);
-                    let mut promises = PromiseSet::new();
-                    for task_id in task_ids {
-                        let mut task = self.tasks.remove(&task_id).expect("Task not found");
-                        let name = task.nickname().to_string();
-                        let listeners = listeners.clone();
-                        let promise = self.worker_pool.submit(move || {
-                            debug!("Starting execution of task {:?}", task);
-                            listeners.iter().for_each(|i| {
-                                i.task_started(task.id(), task.nickname());
-                            });
-                            let r = task.run();
-                            listeners.iter().for_each(|i| {
-                                i.task_finished(task.id(), task.nickname(), &r);
-                            });
-                            (task_id, name, r)
+            while !ordering.empty() {
+                let task_ids = ordering.poll()?;
+                for task_id in task_ids {
+                    let mut task = self.tasks.remove(&task_id).expect("Task not found");
+                    let name =task.nickname().to_string();
+                    let listeners = listeners.clone();
+                    let promise = self.worker_pool.submit(move || {
+                        debug!("Starting execution of task {:?}", task);
+                        listeners.iter().for_each(|i| {
+                            i.task_started(task.id(), task.nickname());
                         });
-                        promises.insert(promise);
-                    }
-                    for (id, name, result)in promises.get() {
-                        if let Err(e) = result {
-                            return Err(FlowBackendError::TaskError {
-                                id,
-                                nickname: name,
-                                error: e,
-                            })
+                        let r = task.run();
+                        listeners.iter().for_each(|i| {
+                            i.task_finished(task.id(), task.nickname(), &r);
+                        });
+                        (task_id, name, r)
+                    });
+                    promises.insert(promise);
+                }
+                loop {
+                    match promises.poll_any() {
+                        None |  Some(PollPromise::Pending) => {
+                            break;
+                        }
+                        Some(PollPromise::Ready((done, name, result))) => {
+                            info!("Task {:?} finished: {:?}", name, result);
+                            if let Err(e) = result {
+                                return Err(FlowBackendError::TaskError {
+                                    id: done,
+                                    nickname: name,
+                                    error: e,
+                                })
+                            }
+
+                            ordering.offer(done)?;
                         }
                     }
-                    Ok(())
-                })?;
+                }
             }
+
+            // for (step, task_ids) in ordering.into_iter().enumerate() {
+            //     debug_span!("step", step = step).in_scope(|| -> Result<(), FlowBackendError> {
+            //         debug!("executing {} tasks: {:?}", task_ids.len(), task_ids);
+            //         let mut promises = PromiseSet::new();
+            //         for task_id in task_ids {
+            //             let mut task = self.tasks.remove(&task_id).expect("Task not found");
+            //             let name = task.nickname().to_string();
+            //             let listeners = listeners.clone();
+            //             let promise = self.worker_pool.submit(move || {
+            //                 debug!("Starting execution of task {:?}", task);
+            //                 listeners.iter().for_each(|i| {
+            //                     i.task_started(task.id(), task.nickname());
+            //                 });
+            //                 let r = task.run();
+            //                 listeners.iter().for_each(|i| {
+            //                     i.task_finished(task.id(), task.nickname(), &r);
+            //                 });
+            //                 (task_id, name, r)
+            //             });
+            //             promises.insert(promise);
+            //         }
+            //         for (id, name, result)in promises.get() {
+            //             if let Err(e) = result {
+            //                 return Err(FlowBackendError::TaskError {
+            //                     id,
+            //                     nickname: name,
+            //                     error: e,
+            //                 })
+            //             }
+            //         }
+            //         Ok(())
+            //     })?;
+            // }
 
             Ok(())
         })
-    }
-}
-
-impl<P: WorkerPool> FlowBackend<P> {
-    /// Creates the new flow backend with the given worker pool
-    pub fn with_worker_pool(worker_pool: P) -> Self {
-        Self {
-            worker_pool,
-            listeners: vec![],
-            tasks: HashMap::new(),
-        }
     }
 }
 
@@ -168,7 +215,7 @@ pub enum FlowBackendError {
     TaskError {
         id: TaskId,
         nickname: String,
-        error: TaskError
+        error: TaskError,
     },
 }
 
@@ -183,6 +230,52 @@ pub trait FlowBackendListener: Sync + Send {
 impl Debug for dyn FlowBackendListener {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlowBackendListener").finish()
+    }
+}
+
+pub struct BackendFlowGraph {
+    tasks: HashSet<TaskId>,
+    dependencies: HashMap<TaskId, HashSet<TaskId>>,
+    dependents: HashMap<TaskId, HashSet<TaskId>>,
+}
+
+impl BackendFlowGraph {
+    pub fn new<'a, I: IntoIterator<Item = &'a BackendTask>>(b_tasks: I) -> Self {
+        let mut tasks = HashSet::new();
+        let mut dependencies = HashMap::new();
+        let mut dependents: HashMap<_, HashSet<_>> = HashMap::new();
+
+        b_tasks.into_iter().for_each(|task| {
+            tasks.insert(task.id());
+            dependencies.insert(task.id(), task.dependencies().clone());
+            for dep in task.dependencies() {
+                dependents.entry(dep.clone()).or_default().insert(task.id());
+            }
+        });
+
+        Self {
+            tasks,
+            dependencies,
+            dependents,
+        }
+    }
+}
+
+impl FlowGraph for BackendFlowGraph {
+    type Tasks = HashSet<TaskId>;
+    type DependsOn = HashSet<TaskId>;
+    type Dependents = HashSet<TaskId>;
+
+    fn tasks(&self) -> Self::Tasks {
+        self.tasks.clone()
+    }
+
+    fn dependencies(&self, task: &TaskId) -> Self::DependsOn {
+        self.dependencies[task].clone()
+    }
+
+    fn dependents(&self, task: &TaskId) -> Self::DependsOn {
+        self.dependencies[task].clone()
     }
 }
 
