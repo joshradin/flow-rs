@@ -2,18 +2,19 @@
 
 use crate::promise::{GetPromise, Just, PollPromise, Promise};
 use crossbeam::atomic::AtomicCell;
-use crossbeam::channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
+use crossbeam::channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::VecDeque;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::{Arc, OnceLock};
-use std::thread::JoinHandle;
+use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 use std::{panic, thread};
-use tracing::{debug, error_span, instrument, trace, warn};
+use tracing::{debug, error_span, event, info, instrument, trace, warn, Level, Span};
+
 
 /// Pool trait
 pub trait WorkerPool {
@@ -23,14 +24,24 @@ pub trait WorkerPool {
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
         f: F,
-    ) -> impl Promise<Output = T> + 'static;
+    ) -> impl Promise<Output=T> + 'static;
 }
 
 #[derive(Debug)]
 struct WorkerThread {
+    id: ThreadId,
     handle: JoinHandle<()>,
     command: Sender<WorkerThreadCommand>,
     state: Arc<AtomicCell<WorkerThreadState>>,
+}
+
+impl Display for WorkerThread {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerThread")
+         .field("id", &self.id)
+         .field("state", &self.state.load())
+         .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,10 +62,13 @@ impl WorkerThread {
         let state = Arc::new(AtomicCell::new(WorkerThreadState::Idle(Instant::now())));
         let (sender, receiver) = unbounded::<WorkerThreadCommand>();
 
+        let (id_tx, id_rx) = bounded::<ThreadId>(1);
+
         let handle = {
             let state = state.clone();
             thread::spawn(move || {
                 error_span!("worker-thread", thread=?thread::current().id()).in_scope(|| {
+                    id_tx.send(thread::current().id()).unwrap();
                     loop {
                         let Ok(recv) = receiver.recv() else {
                             warn!("worker thread disconnected");
@@ -71,7 +85,7 @@ impl WorkerThread {
                                 state.store(WorkerThreadState::Running);
                                 debug!("running runnable...");
                                 let result = catch_unwind(AssertUnwindSafe(|| runnable()));
-                                debug!("runnable finished. reuslt is okay={}", result.is_ok());
+                                debug!("runnable finished. result is okay={}", result.is_ok());
                                 match result {
                                     Ok(_) => {
                                         state.store(WorkerThreadState::Idle(Instant::now()));
@@ -87,7 +101,9 @@ impl WorkerThread {
                 })
             })
         };
+
         Self {
+            id: id_rx.recv().unwrap(),
             handle,
             command: sender,
             state,
@@ -178,7 +194,7 @@ impl InnerThreadPoolExecutor {
     fn idle(&self) -> usize {
         self.threads
             .iter()
-            .filter(|w| matches!(w.state(), WorkerThreadState::Idle(_)))
+            .filter(|w| matches!(w.state(), WorkerThreadState::Idle(_) ))
             .count()
     }
 
@@ -211,7 +227,7 @@ impl InnerThreadPoolExecutor {
     fn running(&self) -> usize {
         self.threads
             .iter()
-            .filter(|w| matches!(w.state(), WorkerThreadState::Running))
+            .filter(|w| matches!(w.state(), WorkerThreadState::Running| WorkerThreadState::Waiting))
             .count()
     }
 
@@ -223,7 +239,6 @@ impl InnerThreadPoolExecutor {
     #[instrument(skip_all, fields(threads=%self.threads.len(), running=%self.running(), idle=%self.idle()
     ))]
     fn step(&mut self) {
-        trace!("Stepping thread pool...");
         self.stop_non_core_idle();
         while self.running() < self.max_size && !self.queue.is_empty() {
             let runnable = self.queue.pop_front().unwrap();
@@ -233,6 +248,7 @@ impl InnerThreadPoolExecutor {
                     .command
                     .send(WorkerThreadCommand::Execute(runnable))
                     .expect("failed to send command to worker");
+                debug!("Started runnable");
             } else {
                 self.queue.push_back(runnable);
             }
@@ -241,13 +257,12 @@ impl InnerThreadPoolExecutor {
 
     /// stops non-core idle threads that have been running for longer than timeout
     fn stop_non_core_idle(&mut self) {
-        trace!("stopping non-core idle threads");
+        // trace!("stopping non-core idle threads");
         while self.idle() > 0 && self.workers() > self.core_size {
             let Some(next) = self.take_next_idle() else {
                 break;
             };
-            trace!("joining worker thread: {next:#?}");
-
+            trace!("joining worker thread: {next:}");
             next.join().expect("failed to join worker thread");
         }
     }
@@ -256,6 +271,9 @@ impl InnerThreadPoolExecutor {
 /// A thread pool executor. Can be cloned freely to get extra handles to this executor.
 #[derive(Clone)]
 pub struct ThreadPool {
+    core_size: usize,
+    max_size: usize,
+    keep_alive_timeout: Duration,
     inner: Arc<Mutex<InnerThreadPoolExecutor>>,
 }
 
@@ -264,13 +282,14 @@ impl ThreadPool {
     pub fn new(core_size: usize, max_size: usize, keep_alive_timeout: Duration) -> Self {
         let inner = InnerThreadPoolExecutor::new(core_size, max_size, keep_alive_timeout);
         let inner = Arc::new(Mutex::new(inner));
-        let mut executor = Self { inner };
+        let mut executor = Self { core_size, max_size, keep_alive_timeout, inner };
         Self::start(&mut executor);
         executor
     }
 
     fn start(this: &mut Self) {
         let inner = this.inner.clone();
+        trace!(core=this.core_size, max=this.max_size, keep_alive=%this.keep_alive_timeout.as_secs_f32() ,"starting thread pool");
         let (sender, receiver) = bounded::<()>(0);
         let handle = {
             let inner = inner.clone();
@@ -285,11 +304,8 @@ impl ThreadPool {
                         }
                         _ => {}
                     }
-
                     let mut locked = inner.lock();
-                    trace!("stepping internal");
                     locked.step();
-                    trace!("stepping finished");
                 }
             })
         };
@@ -301,13 +317,17 @@ impl ThreadPool {
 
 impl Default for ThreadPool {
     fn default() -> Self {
-        Self::new(0, num_cpus::get_physical(), Duration::ZERO)
+        Self::new(0, num_cpus::get(), Duration::from_millis(1000))
     }
 }
 
 impl Debug for ThreadPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ThreadPool").finish_non_exhaustive()
+        f.debug_struct("ThreadPool")
+            .field("core", &self.core_size)
+            .field("max", &self.max_size)
+            .field("keep_alive", &self.keep_alive_timeout.as_secs_f32())
+            .finish()
     }
 }
 
@@ -319,7 +339,7 @@ impl WorkerPool for ThreadPool {
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
         f: F,
-    ) -> impl Promise<Output = T> + 'static {
+    ) -> impl Promise<Output=T> + 'static {
         let mut inner = self.inner.lock();
         inner.submit_callable(f)
     }

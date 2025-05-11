@@ -1,6 +1,7 @@
 //! Actions maps an input to an output
 
 use std::marker::PhantomData;
+use crate::backend::task::InputFlavor;
 
 /// A step
 pub trait Action: Send {
@@ -155,10 +156,40 @@ where
     }
 }
 
+/// A flow based on a function that can only run once
+pub struct FnOnceAction<I, O, F>
+where
+    I: Send,
+    O: Send,
+    F: FnOnce(I) -> O + Send,
+{
+    f: Option<F>,
+    _marker: PhantomData<(I, O)>,
+}
+
+impl<I, O, F> Action for FnOnceAction<I, O, F>
+where
+    I: Send,
+    O: Send,
+    F: FnOnce(I) -> O + Send,
+{
+    type Input = I;
+    type Output = O;
+
+    fn apply(&mut self, input: Self::Input) -> Self::Output {
+        match self.f.take() {
+            None => {
+                panic!("This action can not be run twice")
+            }
+            Some(f) => f(input),
+        }
+    }
+}
+
 pub trait IntoAction<In, Out, Marker>: Sized {
     type Action: Action<Input = In, Output = Out>;
 
-    fn into_action(self) -> Self::Action;
+    fn into_action(self) -> (InputFlavor, Self::Action);
 }
 
 pub struct ProducerIntoAction<R>(PhantomData<R>);
@@ -167,8 +198,8 @@ impl<R: Send + 'static, F: FnMut() -> R + Send + 'static> IntoAction<(), R, Prod
 {
     type Action = BoxAction<'static, (), R>;
 
-    fn into_action(mut self) -> Self::Action {
-        Box::new(action(move |_: ()| self())) as BoxAction<'static, (), R>
+    fn into_action(mut self) -> (InputFlavor, Self::Action) {
+        (InputFlavor::None, Box::new(action(move |_: ()| self())) as BoxAction<'static, (), R>)
     }
 }
 
@@ -178,16 +209,16 @@ impl<T: Send + 'static, R: Send + 'static, F: FnMut(T) -> R + Send + 'static>
 {
     type Action = FnAction<T, R, F>;
 
-    fn into_action(self) -> Self::Action {
-        action(self)
+    fn into_action(self) -> (InputFlavor, Self::Action) {
+        (InputFlavor::Single, action(self))
     }
 }
 
 impl<A: Action> IntoAction<A::Input, A::Output, ()> for A {
     type Action = A;
 
-    fn into_action(self) -> Self::Action {
-        self
+    fn into_action(self) ->(InputFlavor, Self::Action){
+        (InputFlavor::Single, self)
     }
 }
 
@@ -235,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_into_action() {
-        let mut io_action = (|i: i32| i * i).into_action();
+        let (_, mut io_action) = (|i: i32| i * i).into_action();
         let v = io_action.apply(123);
     }
 }

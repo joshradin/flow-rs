@@ -8,32 +8,38 @@ use test_log::test;
 fn test_concurrency() -> Result<(), FlowError> {
     let mut flow: Flow<Vec<i32>, Vec<i32>> = Flow::new();
     let test_data = Vec::from_iter(0..32);
-    let ref f = flow.create("init", move || test_data)
-        .reusable()?;
 
-    let mut squares = Funnel::<i32>::new();
+    let ref f = {
+        let test_data = test_data.clone();
+        flow.create("init", move || test_data.clone()).reusable()?
+    };
+
+    let mut squares = vec![];
     for i in 0..test_data.len() {
-        let get_nth = f.flows_into(flow.create(format!("get[{i}]"), |v: Vec<i32>| v[i]))?;
+        let get_nth = f.flows_into(flow.create(format!("get[{i}]"), move |v: Vec<i32>| v[i]))?;
         let step_ref =
             get_nth.flows_into(flow.create(format!("square[{i}]"), action(|i| i * i)))?;
 
-        step_ref.flows_into(&mut squares);
+        squares.push(step_ref);
     }
 
-
-
-
-    let sum = squares.flow_into(flow.create(
-        "sum",
-        action(|i: Vec<i32>| -> i32 { i.iter().sum() }),
-    ));
+    let ref sum = squares
+        .flows_into(
+            flow.create("sum", action(|i: Vec<i32>| -> i32 { i.iter().sum() }))
+                .funnelled()?,
+        )?
+        .reusable()?;
 
     let mut final_sums = vec![];
     for i in 0..test_data.len() {
         let step_ref = flow.create(
             format!("addSum[{i}]"),
-            action(|In((i, sum)): In<(i32, i32)>| Out(i + sum)),
+            action(move |(vs, sum): (Vec<i32>, i32)| {
+                println!("{}, {sum}", vs[i]);
+                vs[i] + sum
+            }),
         );
+        let step_ref = (f, sum).flows_into(step_ref)?;
         // step_ref.flows_from((flow.input().nth(i), sum.clone()));
         final_sums.push(step_ref);
     }
@@ -46,6 +52,8 @@ fn test_concurrency() -> Result<(), FlowError> {
         .expect("failed to run flow to produce");
 
     assert_eq!(result, expected);
+
+    Ok(())
 }
 
 #[must_use]

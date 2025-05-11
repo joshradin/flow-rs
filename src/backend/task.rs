@@ -4,7 +4,7 @@ use crate::action::{action, Action, BoxAction, Runnable};
 use crate::backend::funnel::BackendFunnel;
 use crate::backend::reusable::Reusable;
 use crate::backend::task::private::Sealed;
-use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise, PromiseExt};
+use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise, PromiseExt, PromiseSet};
 use crate::promise::{IntoPromise, MapPromise};
 use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
 use std::any::{type_name, Any, TypeId};
@@ -14,7 +14,10 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use fortuples::fortuples;
 use thiserror::Error;
+use tracing::{debug, trace};
+use crate::backend::reusable;
 
 static TASK_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -261,7 +264,7 @@ impl<T: Send + 'static> Action for ReceiveInputAction<T> {
             .recv()
             .expect("failed to receive input")
             .downcast::<T>()
-            .unwrap_or_else(|e| panic!("failed to downcast {:?} to `{}`", e, type_name::<T>()));
+            .unwrap_or_else(|e| panic!("failed to downcast {:?} ({:?}) to `{}`", e, e.type_id(), type_name::<T>()));
 
         *i
     }
@@ -399,6 +402,14 @@ impl Input {
     /// Sets an explicit task ordering
     pub fn depends_on(&mut self, task_id: TaskId) {
         self.task_dependencies.insert(task_id);
+    }
+
+    /// Sets an explicit task ordering
+    #[inline]
+    pub fn depends_on_all<I: IntoIterator<Item = TaskId>>(&mut self, task_ids: I) {
+        task_ids.into_iter().for_each(|task_id| {
+            self.depends_on(task_id);
+        })
     }
 
     pub fn set_source<T: 'static + Send, S>(&mut self, source: S) -> Result<(), TaskError>
@@ -681,15 +692,181 @@ impl InputSource<&mut Output> for Input {
     }
 }
 
-pub struct TaskOutputPromise {
-    kind: OutputKind,
+impl<const N: usize> InputSource<[&mut Output; N]> for Input {
+    type Data = [Data; N];
+
+    fn use_as_input_source(&mut self, mut other: [&mut Output; N]) -> Result<(), TaskError> {
+        let task_ids = other.iter().map(|o| o.task_id).collect::<Vec<_>>();
+        let mut promises = || -> Result<_, TaskError> {
+            Ok(other
+                .iter_mut()
+                .map(|o| match &o.kind {
+                    OutputKind::None => Err(TaskError::OutputCanNotBeUsedAsInput {
+                        output_flavor: OutputFlavor::None,
+                        input_flavor: self.flavor,
+                    }),
+                    OutputKind::Once(None) => Err(TaskError::OutputAlreadyUsed),
+                    OutputKind::Once(_) | OutputKind::Reusable(_) => Ok(o.into_promise()),
+                })
+                .collect::<Result<PromiseSet<_>, TaskError>>()?)
+        };
+
+        match self.flavor {
+            InputFlavor::None => Err(TaskError::OutputCanNotBeUsedAsInput {
+                output_flavor: OutputFlavor::None,
+                input_flavor: self.flavor,
+            }),
+            InputFlavor::Single => {
+                let promise = promises()?;
+                self.depends_on_all(task_ids);
+                self.kind = InputKind::Single(Box::new(promise.map(|p| Box::new(p) as Data)));
+                Ok(())
+            }
+            InputFlavor::Funnel => {
+                let promise = promises()?;
+                self.depends_on_all(task_ids);
+
+                todo!()
+            }
+        }
+    }
+}
+
+fortuples! {
+    #[tuples::min_size(1)]
+    impl InputSource<#Tuple> for Input
+    where
+        #(#Member: OutputWithType<T: Send + Sync + 'static>,)*
+    {
+        type Data = (#(#Member::T,)*);
+
+        fn use_as_input_source(&mut self, mut other: #Tuple) -> Result<(), TaskError> {
+            let (#(#Member,)*) = (#(#other.as_output(),)*);
+            let task_ids = [#(#Member.task_id),*];
+            let mut promises = || -> Result<_, TaskError> {
+                let promise_set = [#(#Member,)*]
+                    .iter_mut()
+                    .map(|o| match &o.kind {
+                        OutputKind::None => Err(TaskError::OutputCanNotBeUsedAsInput {
+                            output_flavor: OutputFlavor::None,
+                            input_flavor: self.flavor,
+                        }),
+                        OutputKind::Once(None) => Err(TaskError::OutputAlreadyUsed),
+                        OutputKind::Once(_) | OutputKind::Reusable(_) => Ok(o.into_promise()),
+                    })
+                    .collect::<Result<PromiseSet<_>, TaskError>>()?;
+
+                Ok(promise_set
+                    .into_promise()
+                    .map(|promised: Vec<Data>| {
+                        trace!("converting {promised:?} to ({})", [#(type_name::<#Member::T>()),*].join(", "));
+                        let [#(#Member,)*] = promised.try_into().expect("failed to convert to array");
+                        let ret = (
+                            #(
+                                *#Member.downcast::<#Member::T>().unwrap(),
+                            )*
+                        );
+                        ret
+                    }))
+            };
+
+
+            match self.flavor {
+                InputFlavor::None => Err(TaskError::OutputCanNotBeUsedAsInput {
+                    output_flavor: OutputFlavor::None,
+                    input_flavor: self.flavor,
+                }),
+                InputFlavor::Single => {
+                    let promise = promises()?;
+                    self.depends_on_all(task_ids);
+                    self.kind = InputKind::Single(Box::new(promise.map(|p: Self::Data| Box::new(p) as Data)));
+                    Ok(())
+                }
+                InputFlavor::Funnel => {
+                    let promise = promises()?;
+                    self.depends_on_all(task_ids);
+
+                    todo!()
+                }
+            }
+        }
+    }
+
+
+}
+
+fortuples! {
+    #[tuples::min_size(1)]
+    impl InputSource<(PhantomData<#Tuple>, [&mut Output; #len(Tuple)])> for Input
+    where
+        #(#Member: OutputWithType,)*
+    {
+        type Data = #Tuple;
+
+        fn use_as_input_source(&mut self, other: (PhantomData<#Tuple>, [&mut Output; #len(Tuple)])) -> Result<(), TaskError> {
+            todo!()
+        }
+    }
+}
+
+pub trait OutputWithType {
+    type T;
+
+    fn as_output(&mut self) -> &mut Output;
+}
+
+
+pub struct TypedOutput<'a, T>(&'a mut Output, PhantomData<T>);
+
+impl<'a, T> TypedOutput<'a, T> {
+    pub fn new(output: &'a mut Output) -> Self {
+        TypedOutput(output, PhantomData)
+    }
+}
+
+impl<'a, T> OutputWithType for TypedOutput<'a, T> {
+    type T = T;
+
+    fn as_output(&mut self) -> &mut Output {
+        self.0
+    }
+}
+
+
+pub enum TaskOutputPromise {
+    Once(BoxPromise<'static, Data>),
+    Reusable(reusable::IntoPromise<'static, Data, BoxPromise<'static, Data>>),
 }
 
 impl Promise for TaskOutputPromise {
     type Output = Data;
 
     fn poll(&mut self) -> PollPromise<Self::Output> {
-        todo!()
+        match self {
+            TaskOutputPromise::Once(o) => o.poll(),
+            TaskOutputPromise::Reusable(r) => Promise::poll(r),
+        }
+    }
+}
+
+impl IntoPromise for &mut Output {
+    type Output = Data;
+    type IntoPromise = TaskOutputPromise;
+
+    fn into_promise(self) -> Self::IntoPromise {
+        match &mut self.kind {
+            OutputKind::None => {
+                panic!("can not be used as an input")
+            }
+            OutputKind::Once(o) => {
+                let o = o.take().expect("output already used");
+                TaskOutputPromise::Once(o)
+            }
+            OutputKind::Reusable(s) => {
+                let cloned = s.clone();
+                TaskOutputPromise::Reusable(cloned.into_promise())
+            }
+        }
     }
 }
 
@@ -893,12 +1070,10 @@ mod tests {
             "task3",
             InputFlavor::Single,
             SingleOutput::new(),
-            action(|i: Vec<i32>|
-                       {
-                           assert_eq!(i, [9, 27]);
-                           i.iter().sum::<i32>()
-                       }
-            )
+            action(|i: Vec<i32>| {
+                assert_eq!(i, [9, 27]);
+                i.iter().sum::<i32>()
+            }),
         );
         task3
             .make_funnel::<i32, Vec<i32>>()

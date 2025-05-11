@@ -10,7 +10,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
-use tracing::{Span, debug, debug_span, error_span};
+use tracing::{debug, debug_span, error_span, Span};
 
 /// Executes flow
 #[derive(Debug)]
@@ -44,7 +44,7 @@ impl<P: WorkerPool> FlowBackend<P> {
     }
 
     /// Gets two mutable reference to tasks by id, if the ids are disjoint
-    pub fn get_mut_disjoint(
+    pub fn get_mut2(
         &mut self,
         task_id_1: TaskId,
         task_id_2: TaskId,
@@ -52,6 +52,30 @@ impl<P: WorkerPool> FlowBackend<P> {
         let [a, b] = self.tasks.get_disjoint_mut([&task_id_1, &task_id_2]);
         a.zip(b)
     }
+
+    /// Gets `N` mutable reference to tasks by id, if the ids are disjoint
+    pub fn get_mut_disjoint<const N: usize>(
+        &mut self,
+        task_ids: [TaskId; N],
+    ) -> Option<[&mut BackendTask; N]> {
+        let references = task_ids.each_ref();
+        let tasks = self.tasks.get_disjoint_mut(references);
+        let mut ret: Vec<&mut BackendTask> = vec![];
+
+        for task in tasks {
+            match task {
+                None => {
+                    return None;
+                }
+                Some(b) => {
+                    ret.push(b);
+                }
+            }
+        }
+
+        <[&mut BackendTask; N]>::try_from(ret).ok()
+    }
+
 
     /// Add a backend listener
     pub fn add_listener<L: FlowBackendListener + 'static>(&mut self, listener: L) {
@@ -84,8 +108,9 @@ impl<P: WorkerPool> FlowBackend<P> {
                 debug_span!("step", step = step).in_scope(|| -> Result<(), FlowBackendError> {
                     debug!("executing {} tasks: {:?}", task_ids.len(), task_ids);
                     let mut promises = PromiseSet::new();
-                    for task in task_ids {
-                        let mut task = self.tasks.remove(&task).expect("Task not found");
+                    for task_id in task_ids {
+                        let mut task = self.tasks.remove(&task_id).expect("Task not found");
+                        let name = task.nickname().to_string();
                         let listeners = listeners.clone();
                         let promise = self.worker_pool.submit(move || {
                             debug!("Starting execution of task {:?}", task);
@@ -96,12 +121,18 @@ impl<P: WorkerPool> FlowBackend<P> {
                             listeners.iter().for_each(|i| {
                                 i.task_finished(task.id(), task.nickname(), &r);
                             });
-                            r
+                            (task_id, name, r)
                         });
                         promises.insert(promise);
                     }
-                    for result in promises.get() {
-                        result?;
+                    for (id, name, result)in promises.get() {
+                        if let Err(e) = result {
+                            return Err(FlowBackendError::TaskError {
+                                id,
+                                nickname: name,
+                                error: e,
+                            })
+                        }
                     }
                     Ok(())
                 })?;
@@ -133,8 +164,12 @@ impl Default for FlowBackend {
 pub enum FlowBackendError {
     #[error(transparent)]
     TaskOrdering(#[from] TaskOrderingError),
-    #[error(transparent)]
-    TaskError(#[from] TaskError),
+    #[error("{nickname}: {error}")]
+    TaskError {
+        id: TaskId,
+        nickname: String,
+        error: TaskError
+    },
 }
 
 /// Listens to events produced by the flow backend

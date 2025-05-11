@@ -1,6 +1,6 @@
 use crate::action::{Action, IntoAction};
-use crate::backend::flow_backend::FlowBackend;
-use crate::backend::task::{BackendTask, InputFlavor, SingleOutput, TaskError, TaskId};
+use crate::backend::flow_backend::{FlowBackend, FlowBackendError};
+use crate::backend::task::{BackendTask, Input, InputFlavor, InputSource, Output, SingleOutput, TaskError, TaskId, TypedOutput};
 use crate::flow::private::Sealed;
 use crate::pool::ThreadPool;
 use parking_lot::RwLock;
@@ -9,6 +9,7 @@ use std::any::TypeId;
 use std::marker::PhantomData;
 use std::ops::Index;
 use std::sync::{Arc, Weak};
+use fortuples::fortuples;
 use thiserror::Error;
 
 type StrongFlowBackend<P = ThreadPool> = Arc<RwLock<FlowBackend<P>>>;
@@ -52,9 +53,9 @@ impl<I: Send, O: Send> Flow<I, O> {
         AO: Send + Sync + 'static,
         A::Action: 'static,
     {
-        let action = step.into_action();
+        let (input_flavor, action) = step.into_action();
         let bk =
-            BackendTask::new::<_, AI, AO>(name, InputFlavor::Single, SingleOutput::new(), action);
+            BackendTask::new::<_, AI, AO>(name, input_flavor, SingleOutput::new(), action);
         let s = StepReference::<AI, AO>::new(&bk, &self.backend);
         self.backend.write().add(bk);
         s
@@ -62,6 +63,9 @@ impl<I: Send, O: Send> Flow<I, O> {
 
     /// Applies this flow with a given input
     pub fn apply(self, i: I) -> Result<O, FlowError> {
+        let mut backend = self.backend.write();
+        backend.execute()?;
+
         todo!()
     }
 }
@@ -174,6 +178,10 @@ impl<I, O> Sealed for StepReference<I, O> {}
 pub enum FlowError {
     #[error(transparent)]
     TaskError(#[from] TaskError),
+    #[error(transparent)]
+    BackendFlowError(#[from] FlowBackendError),
+    #[error("Tasks are not disjoint")]
+    NondisjointedTasks
 }
 
 /// Used for wrapping a step with a re-usable output.
@@ -272,12 +280,43 @@ where
     let this_id = *this.id();
     let other_id = *other.id();
     transaction_mut(&weak, move |backend| -> Result<(), FlowError> {
-        let (this, other) = backend.get_mut_disjoint(this_id, other_id).unwrap();
+        let (this, other) = backend.get_mut2(this_id, other_id).unwrap();
         other.input_mut().set_source(this.output_mut())?;
         Ok(())
     })?;
     Ok(())
 }
+
+fn try_set_flow_all<
+    Tuple,
+    T, U, const N: usize, const M: usize>(these: [&T; N], other: &U) -> Result<(), FlowError>
+where
+    Tuple: Send + 'static,
+    T: StepRef,
+    U: StepRef,
+    Input: for<'a> InputSource<(PhantomData<Tuple>, [&'a mut Output; N]), Data=Tuple, >
+{
+    assert_eq!(N + 1, M, "M must be N + 1");
+    let weak = other.backend();
+    let this_id = these.map(|this| *this.id());
+    let other_id = *other.id();
+    let all: [TaskId; M] = this_id.into_iter()
+        .chain([other_id])
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("should not fail");
+    transaction_mut(&weak, move |backend| -> Result<(), FlowError> {
+        let mut all = backend.get_mut_disjoint(all).unwrap();
+        let (these, [other]) = all.split_first_chunk_mut::<N>().unwrap() else {
+            panic!("Unexpected chunk size");
+        };
+        let task_outputs = these.each_mut().map(|t| t.output_mut());
+        other.input_mut().set_source((PhantomData::<Tuple>, task_outputs))?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 
 impl<T, U> FlowsInto<U> for T
 where
@@ -292,12 +331,85 @@ where
     }
 }
 
+impl<T, I, U> FlowsInto<U> for Vec<T>
+where
+    T: StepRef<Out = I>,
+    U: FunneledStepRef<In: FromIterator<I>>,
+{
+    type Out = Result<U, FlowError>;
+
+    fn flows_into(self, other: U) -> Self::Out {
+        for item in self {
+            try_set_flow(&item, &other)?;
+        }
+        Ok(other)
+    }
+}
+
+fortuples! {
+    #[tuples::min_size(1)]
+    impl<O> FlowsInto<O> for #Tuple
+        where
+            #(#Member: StepRef<Out: Send + Sync + 'static>,)*
+            O: StepRef<In=(#(#Member::Out,)*)>,
+    {
+        type Out = Result<O, FlowError>;
+
+        fn flows_into(self, other: O) -> Self::Out {
+            let backend = other.backend().clone();
+            let these_ids = (
+                #(*#self.id(),)*
+            );
+            let other_id = *other.id();
+            transaction_mut(&backend, move |backend| -> Result<(), FlowError> {
+                let [other_task, #(#Member,)*] = backend.get_mut_disjoint([other_id, #(#these_ids),*]).ok_or_else(|| {
+                    FlowError::NondisjointedTasks
+                })?;
+
+                let outputs = (#(  TypedOutput::<#Member::Out>::new(#Member.output_mut())  ,)*);
+                other_task.input_mut().set_source(outputs)?;
+                Ok(())
+            })?;
+
+        //     try_set_flow_all::<
+        //         (#(#Member::Out,)*),
+        // AnyStepRef<(), ()>, _, #len(Tuple), { #len(Tuple) + 1 }>(these.each_ref(), &other)?;
+            Ok(other)
+        }
+    }
+}
+
+
 trait StepRef {
     type In;
     type Out;
 
     fn backend(&self) -> &WeakFlowBackend;
     fn id(&self) -> &TaskId;
+}
+
+struct AnyStepRef<I, O>(WeakFlowBackend, TaskId, PhantomData<(I, O)>);
+
+impl<I, O> AnyStepRef<I, O> {
+    fn erase_types(self) -> AnyStepRef<(), ()> {
+        AnyStepRef(self.0, self.1, PhantomData)
+    }
+}
+
+impl<I, O> StepRef for AnyStepRef<I, O> {
+    type In = I;
+    type Out = O;
+
+    fn backend(&self) -> &WeakFlowBackend {
+        &self.0
+    }
+
+    fn id(&self) -> &TaskId {
+        &self.1
+    }
+}
+fn to_any_step_ref<T: StepRef>(step_ref: &T) ->AnyStepRef<T::In, T::Out> {
+    AnyStepRef(step_ref.backend().clone(), *step_ref.id(), PhantomData)
 }
 
 impl<I, O> StepRef for StepReference<I, O> {
@@ -352,6 +464,10 @@ impl<T: StepRef> StepRef for Funneled<T> {
     }
 }
 
+trait FunneledStepRef: StepRef {}
+impl<T: StepRef> FunneledStepRef for Funneled<T> {}
+impl<T: FunneledStepRef> FunneledStepRef for Reusable<T> {}
+
 mod private {
     pub trait Sealed {}
     impl<T: Sealed> Sealed for &T {}
@@ -365,17 +481,35 @@ mod tests {
     pub struct Move<T>(T);
 
     assert_impl_all!(StepReference<(), Move<i32>>: FlowsInto<StepReference<Move<i32>, ()>>);
+
+
+    assert_impl_all!((StepReference<(), Move<i32>>, StepReference<(), Move<f32>>):
+        FlowsInto<StepReference<(Move<i32>, Move<f32>), ()>>);
+
+
     assert_impl_all!(StepReference<(), i32>: FlowsInto<Reusable<StepReference<i32, ()>>>);
+    assert_impl_all!(StepReference<(), i32>: FlowsInto<Funneled<StepReference<i32, ()>>>);
+    assert_impl_all!(StepReference<(), i32>: FlowsInto<Reusable<Funneled<StepReference<i32, ()>>>>);
     assert_impl_all!(StepReference<(), i32>: FlowsInto<&'static Reusable<StepReference<i32, ()>>>);
+
+
+
     assert_impl_all!(Reusable<StepReference<(), i32>>: FlowsInto<&'static Reusable<StepReference<i32, ()>>>);
     assert_impl_all!(Reusable<StepReference<(), i32>>: FlowsInto<Reusable<StepReference<i32, ()>>>);
     assert_impl_all!(Reusable<StepReference<(), i32>>: FlowsInto<StepReference<i32, ()>>);
     assert_impl_all!(&Reusable<StepReference<(), i32>>: FlowsInto<&'static Reusable<StepReference<i32, ()>>>);
     assert_impl_all!(&Reusable<StepReference<(), i32>>: FlowsInto<Reusable<StepReference<i32, ()>>>);
     assert_impl_all!(&Reusable<StepReference<(), i32>>: FlowsInto<StepReference<i32, ()>>);
+
+
     assert_not_impl_all!(StepReference<(), i32>: FlowsInto<StepReference<(), ()>>);
     assert_not_impl_all!(&StepReference<(), i32>: FlowsInto<StepReference<i32, ()>>);
     assert_not_impl_all!(&StepReference<(), i32>: FlowsInto<&'static StepReference<i32, ()>>);
+    assert_not_impl_all!((StepReference<(), Move<i32>>, StepReference<(), Move<i32>>):
+        FlowsInto<StepReference<(Move<i32>, Move<f32>), ()>>);
+
+
+
 
     #[test]
     fn test_type_checking_non_clone() {
