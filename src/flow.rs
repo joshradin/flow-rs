@@ -1,8 +1,6 @@
 use crate::action::{Action, IntoAction};
 use crate::backend::flow_backend::FlowBackend;
-use crate::backend::task::{
-    BackendTask, InputFlavor, SingleOutput, TaskError, TaskId,
-};
+use crate::backend::task::{BackendTask, InputFlavor, SingleOutput, TaskError, TaskId};
 use crate::flow::private::Sealed;
 use crate::pool::ThreadPool;
 use parking_lot::RwLock;
@@ -264,11 +262,15 @@ pub trait FlowsInto<Other>: Sized {
 
     fn flows_into(self, other: Other) -> Self::Out;
 }
-fn try_set_flow(
-    this_id: TaskId,
-    other_id: TaskId,
-    weak: &WeakFlowBackend,
-) -> Result<(), FlowError> {
+
+fn try_set_flow<T, U>(this: &T, other: &U) -> Result<(), FlowError>
+where
+    T: StepRef,
+    U: StepRef,
+{
+    let weak = this.backend();
+    let this_id = *this.id();
+    let other_id = *other.id();
     transaction_mut(&weak, move |backend| -> Result<(), FlowError> {
         let (this, other) = backend.get_mut_disjoint(this_id, other_id).unwrap();
         other.input_mut().set_source(this.output_mut())?;
@@ -277,128 +279,76 @@ fn try_set_flow(
     Ok(())
 }
 
-impl<I, T, O> FlowsInto<StepReference<T, O>> for StepReference<I, T> {
-    type Out = Result<StepReference<T, O>, FlowError>;
-
-    fn flows_into(self, other: StepReference<T, O>) -> Self::Out {
-        let this_id = self.id;
-        let other_id = other.id;
-
-        let weak = self.backend;
-        try_set_flow(this_id, other_id, &weak)?;
-        Ok(other)
-    }
-}
-
-impl<I, T, O: Clone> FlowsInto<Reusable<StepReference<T, O>>> for StepReference<I, T> {
-    type Out = Result<Reusable<StepReference<T, O>>, FlowError>;
-
-    fn flows_into(self, Reusable(other): Reusable<StepReference<T, O>>) -> Self::Out {
-        let this_id = self.id;
-        let other_id = other.id;
-
-        let weak = self.backend;
-        try_set_flow(this_id, other_id, &weak)?;
-        Ok(Reusable(other))
-    }
-}
-
-impl<'a, I, T, O: Clone> FlowsInto<&'a Reusable<StepReference<T, O>>> for StepReference<I, T> {
-    type Out = Result<&'a Reusable<StepReference<T, O>>, FlowError>;
-
-    fn flows_into(self, other: &'a Reusable<StepReference<T, O>>) -> Self::Out {
-        let this_id = self.id;
-        let other_id = other.0.id;
-
-        let weak = self.backend;
-        try_set_flow(this_id, other_id, &weak)?;
-        Ok(other)
-    }
-}
-
-impl<I, T: Clone, O: Clone> FlowsInto<Reusable<StepReference<T, O>>>
-    for Reusable<StepReference<I, T>>
+impl<T, U> FlowsInto<U> for T
+where
+    T: StepRef<Out = U::In>,
+    U: StepRef,
 {
-    type Out = Result<Reusable<StepReference<T, O>>, FlowError>;
+    type Out = Result<U, FlowError>;
 
-    fn flows_into(self, other: Reusable<StepReference<T, O>>) -> Self::Out {
-        let this_id = self.0.id;
-        let other_id = other.0.id;
-
-        let weak = self.0.backend;
-        try_set_flow(this_id, other_id, &weak)?;
+    fn flows_into(self, other: U) -> Self::Out {
+        try_set_flow(&self, &other)?;
         Ok(other)
     }
 }
 
-impl<I, T: Clone, O> FlowsInto<StepReference<T, O>> for Reusable<StepReference<I, T>> {
-    type Out = Result<StepReference<T, O>, FlowError>;
+trait StepRef {
+    type In;
+    type Out;
 
-    fn flows_into(self, other: StepReference<T, O>) -> Self::Out {
-        let this_id = self.0.id;
-        let other_id = other.id;
+    fn backend(&self) -> &WeakFlowBackend;
+    fn id(&self) -> &TaskId;
+}
 
-        let weak = self.0.backend;
-        try_set_flow(this_id, other_id, &weak)?;
-        Ok(other)
+impl<I, O> StepRef for StepReference<I, O> {
+    type In = I;
+    type Out = O;
+
+    fn backend(&self) -> &WeakFlowBackend {
+        &self.backend
+    }
+
+    fn id(&self) -> &TaskId {
+        &self.id
     }
 }
 
-impl<'a, I, T: Clone, O: Clone> FlowsInto<&'a Reusable<StepReference<T, O>>>
-    for Reusable<StepReference<I, T>>
-{
-    type Out = Result<&'a Reusable<StepReference<T, O>>, FlowError>;
+impl<T: StepRef> StepRef for Reusable<T> {
+    type In = <T as StepRef>::In;
+    type Out = <T as StepRef>::Out;
 
-    fn flows_into(self, other: &'a Reusable<StepReference<T, O>>) -> Self::Out {
-        let this_id = self.0.id;
-        let other_id = other.0.id;
+    fn backend(&self) -> &WeakFlowBackend {
+        self.0.backend()
+    }
 
-        let weak = self.0.backend;
-        try_set_flow(this_id, other_id, &weak)?;
-        Ok(other)
+    fn id(&self) -> &TaskId {
+        self.0.id()
     }
 }
 
-impl<'b, I, T: Clone, O: Clone> FlowsInto<Reusable<StepReference<T, O>>>
-    for &'b Reusable<StepReference<I, T>>
-{
-    type Out = Result<Reusable<StepReference<T, O>>, FlowError>;
+impl<T: StepRef> StepRef for &Reusable<T> {
+    type In = <T as StepRef>::In;
+    type Out = <T as StepRef>::Out;
 
-    fn flows_into(self, other: Reusable<StepReference<T, O>>) -> Self::Out {
-        let this_id = self.0.id;
-        let other_id = other.0.id;
+    fn backend(&self) -> &WeakFlowBackend {
+        self.0.backend()
+    }
 
-        let weak = &self.0.backend;
-        try_set_flow(this_id, other_id, weak)?;
-        Ok(other)
+    fn id(&self) -> &TaskId {
+        self.0.id()
     }
 }
 
-impl<'b, I, T, O> FlowsInto<StepReference<T, O>> for &'b Reusable<StepReference<I, T>> {
-    type Out = Result<StepReference<T, O>, FlowError>;
+impl<T: StepRef> StepRef for Funneled<T> {
+    type In = <T as StepRef>::In;
+    type Out = <T as StepRef>::Out;
 
-    fn flows_into(self, other: StepReference<T, O>) -> Self::Out {
-        let this_id = self.0.id;
-        let other_id = other.id;
-
-        let weak = &self.0.backend;
-        try_set_flow(this_id, other_id, weak)?;
-        Ok(other)
+    fn backend(&self) -> &WeakFlowBackend {
+        self.0.backend()
     }
-}
 
-impl<'a, 'b, I, T, O> FlowsInto<&'a Reusable<StepReference<T, O>>>
-    for &'b Reusable<StepReference<I, T>>
-{
-    type Out = Result<&'a Reusable<StepReference<T, O>>, FlowError>;
-
-    fn flows_into(self, other: &'a Reusable<StepReference<T, O>>) -> Self::Out {
-        let this_id = self.0.id;
-        let other_id = other.0.id;
-
-        let weak = &self.0.backend;
-        try_set_flow(this_id, other_id, weak)?;
-        Ok(other)
+    fn id(&self) -> &TaskId {
+        self.0.id()
     }
 }
 
@@ -424,6 +374,8 @@ mod tests {
     assert_impl_all!(&Reusable<StepReference<(), i32>>: FlowsInto<Reusable<StepReference<i32, ()>>>);
     assert_impl_all!(&Reusable<StepReference<(), i32>>: FlowsInto<StepReference<i32, ()>>);
     assert_not_impl_all!(StepReference<(), i32>: FlowsInto<StepReference<(), ()>>);
+    assert_not_impl_all!(&StepReference<(), i32>: FlowsInto<StepReference<i32, ()>>);
+    assert_not_impl_all!(&StepReference<(), i32>: FlowsInto<&'static StepReference<i32, ()>>);
 
     #[test]
     fn test_type_checking_non_clone() {
@@ -439,10 +391,7 @@ mod tests {
     fn test_type_checking_cloneable() {
         let mut flow: Flow = Flow::new();
 
-        let mut t1 = flow
-            .create("create_i32", || 12_i32)
-            .reusable()
-            .unwrap();
+        let mut t1 = flow.create("create_i32", || 12_i32).reusable().unwrap();
         let t2 = flow.create("consume_i32", |i: i32| {});
         let t3 = flow.create("consume_i32", |i: i32| {});
 
