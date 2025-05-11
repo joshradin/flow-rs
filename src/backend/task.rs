@@ -1,6 +1,6 @@
 //! A task within the backend
 
-use crate::action::{Action, BoxAction, Runnable};
+use crate::action::{action, Action, BoxAction, Runnable};
 use crate::backend::funnel::BackendFunnel;
 use crate::backend::reusable::Reusable;
 use crate::backend::task::private::Sealed;
@@ -14,7 +14,6 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use static_assertions::assert_eq_size;
 use thiserror::Error;
 
 static TASK_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -166,6 +165,49 @@ impl BackendTask {
         Ok(())
     }
 
+    /// Turns this into a funnel input
+    pub fn make_funnel<
+        T: Send + Sync + 'static,
+        I: FromIterator<T> + IntoIterator<Item = T, IntoIter: Send + Sync> + Send + Sync + 'static,
+    >(
+        &mut self,
+    ) -> Result<(), TaskError> {
+        if !matches!(self.input.flavor, InputFlavor::Single) {
+            return Err(TaskError::UnexpectedInput);
+        }
+        if TypeId::of::<I>() != self.input.input_ty {
+            return Err(TaskError::UnexpectedType {
+                expected: self.input.input_ty_str,
+                received: type_name::<T>(),
+            });
+        }
+        self.input.flavor = InputFlavor::Funnel;
+        let mut funnel = BackendFunnel::new();
+        match std::mem::replace(&mut self.input.kind, InputKind::None) {
+            InputKind::None => {}
+            InputKind::Single(input) => {
+                funnel.insert_iter(input.map(|data| {
+                    // this is actually I
+                    let d = *data.downcast::<I>().unwrap_or_else(|b| {
+                        panic!("failed to downcast {b:?} to `{}`", type_name::<I>())
+                    });
+                    d.into_iter().map(|i| Box::new(i) as Data)
+                }));
+            }
+            InputKind::Funnel(_) => {
+                unreachable!()
+            }
+        }
+        let action = std::mem::replace(&mut self.action, Box::new(action(|_| {})));
+        let (new_sender, new_receiver) = bounded::<Data>(1);
+        let old_sender = std::mem::replace(&mut self.action_input_sender, new_sender);
+
+        self.action =
+            Box::new(ReceiveFunnelInputAction::<T, I>::new(new_receiver, old_sender).chain(action));
+        self.input.kind = InputKind::Funnel(funnel);
+        Ok(())
+    }
+
     /// Gets the input for this task
     #[must_use]
     pub fn input_mut(&mut self) -> &mut Input {
@@ -222,6 +264,48 @@ impl<T: Send + 'static> Action for ReceiveInputAction<T> {
             .unwrap_or_else(|e| panic!("failed to downcast {:?} to `{}`", e, type_name::<T>()));
 
         *i
+    }
+}
+
+struct ReceiveFunnelInputAction<T, I: FromIterator<T>> {
+    receiver: Receiver<Data>,
+    sender: Sender<Data>,
+    _marker: PhantomData<(T, I)>,
+}
+
+impl<T, I: FromIterator<T>> ReceiveFunnelInputAction<T, I> {
+    fn new(receiver: Receiver<Data>, sender: Sender<Data>) -> Self {
+        Self {
+            receiver,
+            sender,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Send + Sync + 'static, I: 'static + FromIterator<T> + Send + Sync> Action
+    for ReceiveFunnelInputAction<T, I>
+{
+    type Input = ();
+    type Output = ();
+
+    fn apply(&mut self, _: Self::Input) -> Self::Output {
+        let i = *self
+            .receiver
+            .recv()
+            .expect("failed to receive input")
+            .downcast::<Vec<Data>>()
+            .unwrap_or_else(|e| panic!("failed to downcast {:?} to `{}`", e, type_name::<T>()));
+
+        let rebuilt = i
+            .into_iter()
+            .map(|data| {
+                *data.downcast::<T>().unwrap_or_else(|e| {
+                    panic!("failed to downcast {e:?} to `{}`", type_name::<T>())
+                })
+            })
+            .collect::<I>();
+        self.sender.send(Box::new(rebuilt) as Data).unwrap();
     }
 }
 
@@ -707,7 +791,6 @@ mod tests {
     use crate::action::action;
     use crate::backend::task::test_fixtures::MockTaskInput;
     use std::thread;
-    use crossbeam::channel::unbounded;
 
     #[test]
     fn test_task_id() {
@@ -755,8 +838,7 @@ mod tests {
             "task",
             InputFlavor::None,
             SingleOutput::new(),
-            action(move |_: isize| {
-            }),
+            action(move |_: isize| {}),
         );
     }
 
@@ -809,17 +891,25 @@ mod tests {
         );
         let mut task3 = BackendTask::new(
             "task3",
-            InputFlavor::Funnel,
+            InputFlavor::Single,
             SingleOutput::new(),
-            action(|i: Vec<i32>| i.iter().sum::<i32>()),
+            action(|i: Vec<i32>|
+                       {
+                           assert_eq!(i, [9, 27]);
+                           i.iter().sum::<i32>()
+                       }
+            )
         );
+        task3
+            .make_funnel::<i32, Vec<i32>>()
+            .expect("failed to create funnel");
         task1
             .input_mut()
-            .set_source(MockTaskInput(12))
+            .set_source(MockTaskInput(3))
             .expect("failed to set input");
         task2
             .input_mut()
-            .set_source(MockTaskInput(12))
+            .set_source(MockTaskInput(3))
             .expect("failed to set input for task 2");
         task3
             .input_mut()
