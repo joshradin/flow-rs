@@ -1,12 +1,16 @@
 //! A task within the backend
 
 use crate::action::{action, Action, BoxAction, Runnable};
+use crate::backend::flow_backend::{FlowBackendError, FlowBackendInput, FlowBackendOutput};
 use crate::backend::funnel::BackendFunnel;
+use crate::backend::recv_promise::RecvPromise;
+use crate::backend::reusable;
 use crate::backend::reusable::Reusable;
 use crate::backend::task::private::Sealed;
 use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise, PromiseExt, PromiseSet};
 use crate::promise::{IntoPromise, MapPromise};
 use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError};
+use fortuples::fortuples;
 use std::any::{type_name, Any, TypeId};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
@@ -14,10 +18,8 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use fortuples::fortuples;
 use thiserror::Error;
 use tracing::{debug, trace};
-use crate::backend::reusable;
 
 static TASK_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -264,7 +266,14 @@ impl<T: Send + 'static> Action for ReceiveInputAction<T> {
             .recv()
             .expect("failed to receive input")
             .downcast::<T>()
-            .unwrap_or_else(|e| panic!("failed to downcast {:?} ({:?}) to `{}`", e, e.type_id(), type_name::<T>()));
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to downcast {:?} ({:?}) to `{}`",
+                    e,
+                    e.type_id(),
+                    type_name::<T>()
+                )
+            });
 
         *i
     }
@@ -478,34 +487,6 @@ impl AsOutputFlavor for NoOutput {
             flavor: OutputFlavor::None,
             kind: OutputKind::None,
             set_output_fn: None,
-        }
-    }
-}
-
-struct RecvPromise<T> {
-    receiver: Receiver<T>,
-}
-
-impl<T> RecvPromise<T> {
-    fn new(receiver: Receiver<T>) -> Self {
-        Self { receiver }
-    }
-}
-
-impl<T: Send> Promise for RecvPromise<T> {
-    type Output = T;
-
-    fn poll(&mut self) -> PollPromise<Self::Output> {
-        match self.receiver.try_recv() {
-            Ok(t) => {
-                PollPromise::Ready(t)
-            }
-            Err(TryRecvError::Empty) => {
-                PollPromise::Pending
-            }
-            Err(TryRecvError::Disconnected) => {
-                panic!("Promise channel is disconnected")
-            }
         }
     }
 }
@@ -815,12 +796,36 @@ fortuples! {
     }
 }
 
+impl InputSource<&mut FlowBackendInput> for Input {
+    type Data = Data;
+
+    fn use_as_input_source(&mut self, other: &mut FlowBackendInput) -> Result<(), TaskError> {
+        match self.flavor {
+            InputFlavor::None => Err(TaskError::UnexpectedInput),
+            InputFlavor::Single => {
+                self.kind = InputKind::Single(Box::new(other.take_promise()?));
+                Ok(())
+            }
+            InputFlavor::Funnel => {
+                let InputKind::Funnel(funnel) = &mut self.kind else {
+                    panic!(
+                        "flavor and kind mismatch. flavor = {:?}, kind = {:?}",
+                        self.flavor, self.kind
+                    );
+                };
+                funnel.insert(other.take_promise()?);
+                Ok(())
+            }
+        }
+    }
+}
+
+
 pub trait OutputWithType {
     type T;
 
     fn as_output(&mut self) -> &mut Output;
 }
-
 
 pub struct TypedOutput<'a, T>(&'a mut Output, PhantomData<T>);
 
@@ -837,7 +842,6 @@ impl<'a, T> OutputWithType for TypedOutput<'a, T> {
         self.0
     }
 }
-
 
 pub enum TaskOutputPromise {
     Once(BoxPromise<'static, Data>),
@@ -914,6 +918,14 @@ pub enum TaskError {
         output_flavor: OutputFlavor,
         input_flavor: InputFlavor,
     },
+    #[error(transparent)]
+    FlowBackendError(Box<FlowBackendError>),
+}
+
+impl From<FlowBackendError> for TaskError {
+    fn from(value: FlowBackendError) -> Self {
+        TaskError::FlowBackendError(Box::new(value))
+    }
 }
 
 #[cfg(test)]
@@ -974,6 +986,7 @@ mod tests {
     use crate::action::action;
     use crate::backend::task::test_fixtures::MockTaskInput;
     use std::thread;
+    use crate::backend::flow_backend::FlowBackendOutput;
 
     #[test]
     fn test_task_id() {
@@ -1012,6 +1025,40 @@ mod tests {
         task.run().expect("failed to run task");
         let output = rx.try_recv().expect("failed to receive output");
         assert_eq!(output, "Hello, world");
+    }
+
+    #[test]
+    fn test_flow_input_to_task() {
+        let mut input = FlowBackendInput::default();
+        let mut task = BackendTask::new(
+            "task",
+            InputFlavor::Single,
+            SingleOutput::new(),
+            action(move |i: i32| {
+                assert_eq!(i, 32);
+            }),
+        );
+        task.input_mut().set_source(&mut input).expect("failed to set input");
+        input.send(Box::new(32_i32)).expect("failed to send input");
+        task.run().expect("failed to run task");
+    }
+
+    #[test]
+    fn test_flow_output_from_task() {
+        let mut output = FlowBackendOutput::default();
+        let mut task = BackendTask::new(
+            "task",
+            InputFlavor::None,
+            SingleOutput::new(),
+            action(move |_: ()| {
+                32_i32
+            }),
+        );
+        output.set_source(task.output_mut()).expect("failed to set output");
+
+        task.run().expect("failed to run task");
+        let t =  *output.get().downcast::<i32>().expect("failed to downcast output");
+        assert_eq!(t, 32_i32);
     }
 
     #[test]

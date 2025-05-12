@@ -1,10 +1,14 @@
 //! Actual flow backend
 
-use crate::backend::task::{BackendTask, TaskError, TaskId};
+use crate::backend::recv_promise::RecvPromise;
+use crate::backend::task::{BackendTask, Data, InputSource, Output, TaskError, TaskId};
 use crate::pool::{ThreadPool, WorkerPool};
-use crate::promise::{GetPromise, MapPromise, PollPromise, PromiseSet};
+use crate::promise::{
+    BoxPromise, GetPromise, IntoPromise, MapPromise, PollPromise, Promise, PromiseSet,
+};
 use crate::task_ordering::{DefaultTaskOrderer, FlowGraph};
 use crate::task_ordering::{TaskOrderer, TaskOrdering, TaskOrderingError};
+use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError};
 use petgraph::visit::NodeRef;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
@@ -22,6 +26,8 @@ pub struct FlowBackend<T: TaskOrderer = DefaultTaskOrderer, P: WorkerPool = Thre
     orderer: T,
     listeners: Vec<Box<dyn FlowBackendListener>>,
     tasks: HashMap<TaskId, BackendTask>,
+    input: FlowBackendInput,
+    output: FlowBackendOutput,
 }
 
 impl FlowBackend {
@@ -46,6 +52,8 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
             orderer: task_orderer,
             listeners: vec![],
             tasks: HashMap::new(),
+            input: FlowBackendInput::default(),
+            output: FlowBackendOutput::default(),
         }
     }
 
@@ -95,6 +103,25 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
         }
 
         <[&mut BackendTask; N]>::try_from(ret).ok()
+    }
+
+    /// Gets the given task id and the flow input
+    pub fn get_mut_and_input(
+        &mut self,
+        task_id: TaskId,
+    ) -> (Option<&mut BackendTask>, &mut FlowBackendInput) {
+        let Self { tasks, input, .. } = self;
+
+        (tasks.get_mut(&task_id), input)
+    }
+    /// Gets the given task id and the flow output
+    pub fn get_mut_and_output(
+        &mut self,
+        task_id: TaskId,
+    ) -> (Option<&mut BackendTask>, &mut FlowBackendOutput) {
+        let Self { tasks, output, .. } = self;
+
+        (tasks.get_mut(&task_id), output)
     }
 
     /// Add a backend listener
@@ -204,11 +231,102 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
             Ok(())
         })
     }
+
+    pub fn output(&self) -> &FlowBackendOutput {
+        &self.output
+    }
+
+    pub fn output_mut(&mut self) -> &mut FlowBackendOutput {
+        &mut self.output
+    }
+
+    pub fn input(&self) -> &FlowBackendInput {
+        &self.input
+    }
+
+    pub fn input_mut(&mut self) -> &mut FlowBackendInput {
+        &mut self.input
+    }
 }
 
 impl Default for FlowBackend {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct FlowBackendInput {
+    sender: Sender<Data>,
+    receiver: Option<Receiver<Data>>,
+}
+
+impl FlowBackendInput {
+    /// Send data
+    pub fn send(&mut self, d: Data) -> Result<(), FlowBackendError> {
+        self.sender.send(d)?;
+        Ok(())
+    }
+
+    /// Takes the promise
+    pub fn take_promise(&mut self) -> Result<RecvPromise<Data>, FlowBackendError> {
+        match self.receiver.take() {
+            None => Err(FlowBackendError::FlowInputTaskAlreadySet),
+            Some(recv) => Ok(RecvPromise::new(recv)),
+        }
+    }
+}
+
+impl Default for FlowBackendInput {
+    fn default() -> Self {
+        let (tx, rx) = bounded(1);
+        Self {
+            sender: tx,
+            receiver: Some(rx),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FlowBackendOutput {
+    promise: Option<BoxPromise<'static, Data>>,
+}
+
+impl FlowBackendOutput {
+    pub fn set_source(&mut self, source: &mut Output) -> Result<(), FlowBackendError> {
+        let promise = source.into_promise();
+        match &self.promise {
+            None => {
+                let _ = self.promise.insert(Box::new(promise));
+            }
+            Some(_) => return Err(FlowBackendError::FlowOutputTaskAlreadySet),
+        }
+
+        Ok(())
+    }
+
+    pub fn has_source(&self) -> bool {
+        matches!(self.promise, Some(_))
+    }
+}
+
+impl Default for FlowBackendOutput {
+    fn default() -> Self {
+        Self { promise: None }
+    }
+}
+
+impl IntoPromise for &mut FlowBackendOutput {
+    type Output = Data;
+    type IntoPromise = BoxPromise<'static, Data>;
+
+    fn into_promise(self) -> Self::IntoPromise {
+        match self.promise.take() {
+            None => {
+                panic!("FlowBackend output has no promise")
+            }
+            Some(promise) => promise,
+        }
     }
 }
 
@@ -249,6 +367,14 @@ pub enum FlowBackendError {
         nickname: String,
         error: TaskError,
     },
+    #[error("Only one task can use the flow input")]
+    FlowInputTaskAlreadySet,
+    #[error("Only one task can use the flow output")]
+    FlowOutputTaskAlreadySet,
+    #[error(transparent)]
+    SendError(#[from] SendError<Data>),
+    #[error(transparent)]
+    RecvError(#[from] TryRecvError),
 }
 
 /// Listens to events produced by the flow backend
