@@ -1,8 +1,6 @@
 use crate::action::{Action, IntoAction};
 use crate::backend::flow_backend::{FlowBackend, FlowBackendError};
-use crate::backend::task::{
-    BackendTask, Input, InputSource, Output, SingleOutput, TaskError, TaskId, TypedOutput,
-};
+use crate::backend::task::{BackendTask, Data, Input, InputSource, Output, SingleOutput, TaskError, TaskId, TypedOutput};
 use crate::flow::private::Sealed;
 use crate::pool::{ThreadPool, WorkerPool};
 use crate::task_ordering::{DefaultTaskOrderer, SteppedTaskOrderer, TaskOrderer};
@@ -14,6 +12,7 @@ use std::marker::PhantomData;
 use std::ops::Index;
 use std::sync::{Arc, Weak};
 use thiserror::Error;
+use crate::promise::{IntoPromise, PromiseExt};
 
 type StrongFlowBackend<T = DefaultTaskOrderer> = Arc<RwLock<FlowBackend<T>>>;
 type WeakFlowBackend<T = DefaultTaskOrderer> = Weak<RwLock<FlowBackend<T>>>;
@@ -87,15 +86,15 @@ impl<I: Send, O: Send> Flow<I, O> {
     }
 }
 
-impl<I: Send, O: Send, T: TaskOrderer> Flow<I, O, T> {
+impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I, O, T> {
     /// Gets a representation of the input of a flow
-    pub fn input(&self) -> FlowInput<I> {
-        todo!()
+    pub fn input(&self) -> FlowInput<I, T> {
+        FlowInput::new(&self.backend)
     }
 
     /// Gets the representation of the output of a flow
-    pub fn output(&self) -> FlowOutput<O> {
-        todo!()
+    pub fn output(&self) -> FlowOutput<O, T> {
+        FlowOutput::new(&self.backend)
     }
 
     /// Adds a step to this flow
@@ -116,16 +115,40 @@ impl<I: Send, O: Send, T: TaskOrderer> Flow<I, O, T> {
         s
     }
 
+    fn apply_(self, i: I, expect_result: bool) -> Result<Option<O>, FlowError> {
+        let mut backend = self.backend.write();
+        backend.input_mut().send(Box::new(i))?;
+        backend.execute()?;
+        if expect_result {
+            if !backend.output().has_source() {
+                return Err(FlowError::NoOutputTask)
+            }
+
+            let promise = backend.output_mut().into_promise();
+            match promise.try_get() {
+                Ok(ok) => {
+                    let o: O = *ok.downcast().expect("Failed to downcast result");
+                    Ok(Some(o))
+                },
+                Err(_) => {
+                    Err(FlowError::OutputExpected)
+                }
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Applies this flow with a given input
     pub fn apply(self, i: I) -> Result<O, FlowError> {
-        let mut backend = self.backend.write();
-        backend.execute()?;
-
-        todo!()
+        self.apply_(i, true)?
+            .ok_or_else(|| {
+                FlowError::OutputExpected
+            })
     }
 }
 
-impl<O: Send> Flow<(), O> {
+impl<O: Send + Sync + 'static> Flow<(), O> {
     /// Gets the end result of this flow
     #[inline]
     pub fn get(self) -> Result<O, FlowError> {
@@ -133,27 +156,47 @@ impl<O: Send> Flow<(), O> {
     }
 }
 
-impl<I: Send> Flow<I, ()> {
+impl<I: Send + Sync + 'static> Flow<I, ()> {
     /// Runs this flow with the given input
     #[inline]
     pub fn accept(self, i: I) -> Result<(), FlowError> {
-        self.apply(i)
+        self.apply_(i, false)?;
+        Ok(())
     }
 }
 
-pub struct FlowInput<I> {
+/// Represents the input of a flow
+pub struct FlowInput<I, T: TaskOrderer = DefaultTaskOrderer> {
+    backend: WeakFlowBackend<T>,
     _marker: PhantomData<fn(I)>,
+}
+
+impl<I, T: TaskOrderer> FlowInput<I, T> {
+    fn new(b: &StrongFlowBackend<T>) -> Self {
+        Self {
+            backend: Arc::downgrade(b),
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<I> FlowInput<Vec<I>> {
-    /// Gets the nth index of this input
-    pub fn nth(&self, i: usize) -> FlowInput<I> {
-        todo!()
-    }
+
 }
 
-pub struct FlowOutput<I> {
+/// Represents the output of a flow
+pub struct FlowOutput<I, T: TaskOrderer = DefaultTaskOrderer> {
+    backend: WeakFlowBackend<T>,
     _marker: PhantomData<fn(I)>,
+}
+
+impl<I, T: TaskOrderer> FlowOutput<I, T> {
+    fn new(backend: &StrongFlowBackend<T>) -> Self {
+        Self {
+            backend: Arc::downgrade(backend),
+            _marker: PhantomData,
+        }
+    }
 }
 
 /// A reference to a step
@@ -237,6 +280,12 @@ pub enum FlowError {
     BackendFlowError(#[from] FlowBackendError),
     #[error("Tasks are not disjoint")]
     NondisjointedTasks,
+    #[error("An output was expected for this flow, but none was found")]
+    OutputExpected,
+    #[error("No task is being used as an output")]
+    NoOutputTask,
+    #[error("Task with id {} was not found", .0)]
+    TaskNotFound(TaskId),
 }
 
 /// Used for wrapping a step with a re-usable output.
@@ -377,6 +426,7 @@ where
     Ok(())
 }
 
+#[diagnostic::do_not_recommend]
 impl<T, U, TO: TaskOrderer> FlowsInto<U> for T
 where
     T: TaskRefWithBackend<TO=TO,Out = U::In>,
@@ -389,7 +439,7 @@ where
         Ok(other)
     }
 }
-
+#[diagnostic::do_not_recommend]
 impl<T, I, U, TO: TaskOrderer> FlowsInto<U> for Vec<T>
 where
     T: TaskRefWithBackend<Out = I, TO=TO>,
@@ -406,6 +456,7 @@ where
 }
 
 fortuples! {
+    #[diagnostic::do_not_recommend]
     #[tuples::min_size(1)]
     impl<O> FlowsInto<O> for #Tuple
         where
@@ -546,9 +597,45 @@ impl<T: TaskRefWithBackend> TaskRef for Funneled<T> {
     }
 }
 
+
+
 trait FunneledStepRef: TaskRefWithBackend {}
 impl<T: TaskRefWithBackend> FunneledStepRef for Funneled<T> {}
 impl<T: FunneledStepRef> FunneledStepRef for Reusable<T> {}
+
+impl<I, T: TaskRefWithBackend<In=I>> FlowsInto<T> for FlowInput<I, T::TO> {
+    type Out = Result<T, FlowError>;
+
+    fn flows_into(self, other: T) -> Self::Out {
+        transaction_mut(&self.backend, |backend| -> Result<(), FlowError> {
+            let (task, input)= backend.get_mut_and_input(*other.id());
+            let t = task.ok_or_else(|| {
+                FlowError::TaskNotFound(*other.id())
+            })?;
+            t.input_mut().set_source(input)?;
+            Ok(())
+        })?;
+
+        Ok(other)
+    }
+}
+
+
+impl<O, T: TaskRefWithBackend<Out=O>> FlowsInto<FlowOutput<O, T::TO>> for T {
+    type Out = Result<(), FlowError>;
+
+    fn flows_into(self, _other: FlowOutput<O, T::TO>) -> Self::Out {
+        transaction_mut(&self.backend(), |backend| -> Result<(), FlowError> {
+            let (task, output)= backend.get_mut_and_output(*self.id());
+            let t = task.ok_or_else(|| {
+                FlowError::TaskNotFound(*self.id())
+            })?;
+            output.set_source(t.output_mut())?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+}
 
 mod private {
     pub trait Sealed {}

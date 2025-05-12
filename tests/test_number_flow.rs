@@ -2,6 +2,7 @@ use flow_rs::action::action;
 use flow_rs::task_ordering::{GraphTraversalTaskOrderer, TaskOrderer};
 use flow_rs::*;
 use test_log::test;
+use tracing::info;
 
 /// This example flow will first accept a list of integer, get the square of all of the integers,
 /// then sum that. Finally, it will return a list of all the integers with the sum added to each.
@@ -18,7 +19,7 @@ fn test_stepped() -> Result<(), FlowError> {
     let result: Vec<i32> = flow
         .apply(test_data)
         .expect("failed to run flow to produce");
-
+    info!("got result: {:?}", &result);
     assert_eq!(result, expected);
 
     Ok(())
@@ -38,7 +39,7 @@ fn test_graph() -> Result<(), FlowError> {
     // flow.output().flows_from(final_sums);
 
     let expected = expected_result(&test_data);
-    let result: Vec<i32> = flow
+    let result: Vec<_> = flow
         .apply(test_data)
         .expect("failed to run flow to produce");
 
@@ -51,10 +52,8 @@ fn populate_flow<T: TaskOrderer>(
     test_data: &Vec<i32>,
     flow: &mut Flow<Vec<i32>, Vec<i32>, T>,
 ) -> Result<(), FlowError> {
-    let ref f = {
-        let test_data = test_data.clone();
-        flow.create("init", move || test_data.clone()).reusable()?
-    };
+    let ref f = flow.create("init", move |i: Vec<i32>| i).reusable()?;
+    flow.input().flows_into(f)?;
 
     let mut squares = vec![];
     for i in 0..test_data.len() {
@@ -89,6 +88,10 @@ fn populate_flow<T: TaskOrderer>(
         // step_ref.flows_from((flow.input().nth(i), sum.clone()));
         final_sums.push(step_ref);
     }
+
+    let output = final_sums.flows_into(flow.create("output", |t: Vec<i32>| t).funnelled()?)?;
+    output.flows_into(flow.output())?;
+
     Ok(())
 }
 
