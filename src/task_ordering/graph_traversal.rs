@@ -3,7 +3,7 @@ use crate::task_ordering::{FlowGraph, TaskOrderer, TaskOrdering, TaskOrderingErr
 use crate::TaskId;
 use petgraph::acyclic::Acyclic;
 use petgraph::prelude::*;
-use tracing::info;
+use tracing::{info, trace};
 
 /// Attempts to create a task order by directly working with a graph
 #[derive(Default)]
@@ -65,7 +65,7 @@ impl TaskOrdering for GraphTraversalTaskOrdering {
             self.in_use.insert(*task_id);
         }
         if !result.is_empty() {
-            info!("graph traversal task ordering: {:?}", result);
+            trace!("graph traversal task ordering: {:?}", result);
         }
         Ok(result)
     }

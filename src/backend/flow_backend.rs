@@ -1,12 +1,12 @@
 //! Actual flow backend
 
-use std::cmp::Reverse;
 use crate::backend::task::{BackendTask, TaskError, TaskId};
 use crate::pool::{ThreadPool, WorkerPool};
 use crate::promise::{GetPromise, MapPromise, PollPromise, PromiseSet};
 use crate::task_ordering::{DefaultTaskOrderer, FlowGraph};
 use crate::task_ordering::{TaskOrderer, TaskOrdering, TaskOrderingError};
 use petgraph::visit::NodeRef;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::iter::Rev;
@@ -127,28 +127,32 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
             let mut promises = PromiseSet::new();
 
             let mut step: usize = 1;
-            let mut open_tasks = Vec::<(usize, usize, TaskId)>::new();
+            let mut open_tasks = BinaryHeap::<Weighted<TaskId>>::new();
 
             while !ordering.empty() {
                 let newly_ready = ordering.poll()?;
                 let new_adds = !newly_ready.is_empty();
                 for task_id in newly_ready {
                     let dependents = graph.dependents(&task_id).len();
-                    open_tasks.push((dependents, step, task_id));
+                    open_tasks.push(Weighted {
+                        t: task_id,
+                        dependents: dependents + 1,
+                        step,
+                    });
                 }
 
                 let max = self.worker_pool.max_size() - self.worker_pool.active();
-                open_tasks
-                    .sort_by_cached_key(|&(dependents, c_step, _)| {
-                        Reverse((step - c_step) * dependents)
-                    });
-
 
                 let len = open_tasks.len();
                 let to_drain = max.min(len);
-                trace!("sorted tasks: {:?}", open_tasks);
-                let batch = open_tasks.drain(..to_drain)
-                    .map(|(_, _, task_id)| task_id);
+                info!("task heap: {:?}", open_tasks);
+                let batch = {
+                    let mut batch = Vec::with_capacity(to_drain);
+                    for _ in 0..to_drain {
+                        batch.push(open_tasks.pop().unwrap().t);
+                    }
+                    batch
+                };
 
                 for task_id in batch {
                     let mut task = self.tasks.remove(&task_id).expect("Task not found");
@@ -197,40 +201,6 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                 }
             }
 
-            // for (step, task_ids) in ordering.into_iter().enumerate() {
-            //     debug_span!("step", step = step).in_scope(|| -> Result<(), FlowBackendError> {
-            //         debug!("executing {} tasks: {:?}", task_ids.len(), task_ids);
-            //         let mut promises = PromiseSet::new();
-            //         for task_id in task_ids {
-            //             let mut task = self.tasks.remove(&task_id).expect("Task not found");
-            //             let name = task.nickname().to_string();
-            //             let listeners = listeners.clone();
-            //             let promise = self.worker_pool.submit(move || {
-            //                 debug!("Starting execution of task {:?}", task);
-            //                 listeners.iter().for_each(|i| {
-            //                     i.task_started(task.id(), task.nickname());
-            //                 });
-            //                 let r = task.run();
-            //                 listeners.iter().for_each(|i| {
-            //                     i.task_finished(task.id(), task.nickname(), &r);
-            //                 });
-            //                 (task_id, name, r)
-            //             });
-            //             promises.insert(promise);
-            //         }
-            //         for (id, name, result)in promises.get() {
-            //             if let Err(e) = result {
-            //                 return Err(FlowBackendError::TaskError {
-            //                     id,
-            //                     nickname: name,
-            //                     error: e,
-            //                 })
-            //             }
-            //         }
-            //         Ok(())
-            //     })?;
-            // }
-
             Ok(())
         })
     }
@@ -239,6 +209,33 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
 impl Default for FlowBackend {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug)]
+struct Weighted<T> {
+    t: T,
+    dependents: usize,
+    step: usize,
+}
+
+impl<T> PartialEq for Weighted<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.dependents == other.dependents && self.step == other.step
+    }
+}
+impl<T> Eq for Weighted<T> {}
+impl<T> PartialOrd for Weighted<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<T> Ord for Weighted<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // consider step to denominator and dependents to numerator
+        let this = self.dependents * other.step;
+        let other = other.dependents * self.step;
+        this.cmp(&other)
     }
 }
 
@@ -312,7 +309,6 @@ impl FlowGraph for BackendFlowGraph {
 
     fn dependents(&self, task: &TaskId) -> Self::DependsOn {
         self.dependents.get(task).cloned().unwrap_or_default()
-
     }
 }
 
@@ -386,5 +382,33 @@ mod tests {
         backend.add(task2);
         backend.add(task3);
         backend
+    }
+
+    #[test]
+    fn test_weighted_task_id_ordering() {
+        let a = Weighted {
+            t: (),
+            dependents: 1,
+            step: 1,
+        };
+        let b = Weighted {
+            t: (),
+            dependents: 1,
+            step: 2,
+        };
+        let c = Weighted {
+            t: (),
+            dependents: 6,
+            step: 2,
+        };
+        let d = Weighted {
+            t: (),
+            dependents: 6,
+            step: 6,
+        };
+        assert!(a > b);
+        assert!(c > b);
+        assert!(c > a);
+        assert!(c > d);
     }
 }

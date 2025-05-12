@@ -49,7 +49,7 @@ fn test_graph() -> Result<(), FlowError> {
 
 fn populate_flow<T: TaskOrderer>(
     test_data: &Vec<i32>,
-    mut flow: &mut Flow<Vec<i32>, Vec<i32>, T>,
+    flow: &mut Flow<Vec<i32>, Vec<i32>, T>,
 ) -> Result<(), FlowError> {
     let ref f = {
         let test_data = test_data.clone();
@@ -82,7 +82,6 @@ fn populate_flow<T: TaskOrderer>(
         let step_ref = flow.create(
             format!("addSum[{i}]"),
             action(move |(vs, sum): (Vec<i32>, i32)| {
-                println!("{}, {sum}", vs[i]);
                 vs[i] + sum
             }),
         );
