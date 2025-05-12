@@ -129,7 +129,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                     let name =task.nickname().to_string();
                     let listeners = listeners.clone();
                     let promise = self.worker_pool.submit(move || {
-                        debug!("Starting execution of task {:?}", task);
+                        info!("Task {:?} started", task.nickname());
                         listeners.iter().for_each(|i| {
                             i.task_started(task.id(), task.nickname());
                         });

@@ -1,17 +1,58 @@
 use flow_rs::action::action;
+use flow_rs::task_ordering::{GraphTraversalTaskOrderer, TaskOrderer};
 use flow_rs::*;
+use std::thread;
+use std::time::Duration;
 use test_log::test;
-use flow_rs::task_ordering::SteppedTaskOrderer;
 
 /// This example flow will first accept a list of integer, get the square of all of the integers,
 /// then sum that. Finally, it will return a list of all the integers with the sum added to each.
 #[test]
-fn test_concurrency() -> Result<(), FlowError> {
-    let mut flow = FlowBuilder::new()
-        .with_task_orderer(SteppedTaskOrderer::default())
-        .build();
-    let test_data = Vec::from_iter(0..32);
+fn test_stepped() -> Result<(), FlowError> {
+    let mut flow = FlowBuilder::new().build();
 
+    let test_data = Vec::from_iter(0..32);
+    populate_flow(&test_data, &mut flow)?;
+
+    // flow.output().flows_from(final_sums);
+
+    let expected = expected_result(&test_data);
+    let result: Vec<i32> = flow
+        .apply(test_data)
+        .expect("failed to run flow to produce");
+
+    assert_eq!(result, expected);
+
+    Ok(())
+}
+
+/// This example flow will first accept a list of integer, get the square of all of the integers,
+/// then sum that. Finally, it will return a list of all the integers with the sum added to each.
+#[test]
+fn test_graph() -> Result<(), FlowError> {
+    let mut flow = FlowBuilder::new()
+        .with_task_orderer(GraphTraversalTaskOrderer)
+        .build();
+
+    let test_data = Vec::from_iter(0..32);
+    populate_flow(&test_data, &mut flow)?;
+
+    // flow.output().flows_from(final_sums);
+
+    let expected = expected_result(&test_data);
+    let result: Vec<i32> = flow
+        .apply(test_data)
+        .expect("failed to run flow to produce");
+
+    assert_eq!(result, expected);
+
+    Ok(())
+}
+
+fn populate_flow<T: TaskOrderer>(
+    test_data: &Vec<i32>,
+    mut flow: &mut Flow<Vec<i32>, Vec<i32>, T>,
+) -> Result<(), FlowError> {
     let ref f = {
         let test_data = test_data.clone();
         flow.create("init", move || test_data.clone()).reusable()?
@@ -20,8 +61,13 @@ fn test_concurrency() -> Result<(), FlowError> {
     let mut squares = vec![];
     for i in 0..test_data.len() {
         let get_nth = f.flows_into(flow.create(format!("get[{i}]"), move |v: Vec<i32>| v[i]))?;
-        let step_ref =
-            get_nth.flows_into(flow.create(format!("square[{i}]"), action(|i| i * i)))?;
+        let step_ref = get_nth.flows_into(flow.create(
+            format!("square[{i}]"),
+            action(|i| {
+                //thread::sleep(Duration::from_millis(1000));
+                i * i
+            }),
+        ))?;
 
         squares.push(step_ref);
     }
@@ -46,16 +92,6 @@ fn test_concurrency() -> Result<(), FlowError> {
         // step_ref.flows_from((flow.input().nth(i), sum.clone()));
         final_sums.push(step_ref);
     }
-
-    // flow.output().flows_from(final_sums);
-
-    let expected = expected_result(&test_data);
-    let result: Vec<i32> = flow
-        .apply(test_data)
-        .expect("failed to run flow to produce");
-
-    assert_eq!(result, expected);
-
     Ok(())
 }
 

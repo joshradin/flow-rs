@@ -1,10 +1,17 @@
 use std::fmt::Display;
+use petgraph::algo::{kosaraju_scc, Cycle};
+use petgraph::Graph;
+use petgraph::prelude::NodeIndex;
 use thiserror::Error;
+use petgraph::adj::IndexType;
+use petgraph::graph::DiGraph;
 use crate::TaskId;
 
 mod stepped;
+mod graph_traversal;
 
 pub use stepped::SteppedTaskOrderer;
+pub use graph_traversal::GraphTraversalTaskOrderer;
 
 pub type DefaultTaskOrderer = stepped::SteppedTaskOrderer;
 
@@ -56,8 +63,15 @@ pub trait TaskOrderer {
 pub enum TaskOrderingError {
     #[error("A cycle was detected. {}", format_cycle(cycle))]
     CyclicTasks { cycle: Vec<TaskId> },
+    #[error("Task {task} is not part of this graph")]
+    UnknownTask { task: TaskId },
 }
 
+impl TaskOrderingError {
+    fn cycle<Ix>(err: Cycle<NodeIndex<Ix>>, graph: &DiGraph<TaskId, (), Ix>) -> Self {
+        todo!()
+    }
+}
 
 fn format_cycle<T: Display>(cycle: &Vec<T>) -> String {
     cycle
@@ -65,4 +79,15 @@ fn format_cycle<T: Display>(cycle: &Vec<T>) -> String {
         .map(|id| format!("{}", id))
         .collect::<Vec<String>>()
         .join(" -> ")
+}
+
+/// Gets a cycle containing this node
+fn get_cycle<N, E, Ix: IndexType>(
+    graph: &DiGraph<N, E, Ix>,
+    node: NodeIndex<Ix>,
+) -> Option<Vec<NodeIndex<Ix>>> {
+    let scc = kosaraju_scc(graph);
+    println!("scc: {:?}", scc);
+
+    scc.iter().find(|nodes| nodes.contains(&node)).cloned()
 }

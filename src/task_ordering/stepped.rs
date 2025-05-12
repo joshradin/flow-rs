@@ -1,6 +1,6 @@
 use crate::backend::task::BackendTask;
 use crate::task_ordering::{FlowGraph, TaskOrderer, TaskOrdering, TaskOrderingError};
-use crate::TaskId;
+use crate::{task_ordering, TaskId};
 use petgraph::adj;
 use petgraph::adj::{IndexType, UnweightedList};
 use petgraph::algo::tred::dag_to_toposorted_adjacency_list;
@@ -12,8 +12,6 @@ use tracing::debug;
 
 #[derive(Default)]
 pub struct SteppedTaskOrderer;
-
-
 
 impl TaskOrderer for SteppedTaskOrderer {
     type TaskOrdering = SteppedTaskOrdering;
@@ -50,7 +48,7 @@ impl TaskOrdering for SteppedTaskOrdering {
 
     fn offer(&mut self, task: TaskId) -> Result<(), TaskOrderingError> {
         debug!("{task} finished");
-        for step in &mut self.order {
+        for step in &mut self.order.iter_mut().rev() {
             if let Some(idx) = step.iter().position(|(idx, _)| *idx ==task) {
                 step.remove(idx);
                 break;
@@ -90,7 +88,7 @@ impl SteppedTaskOrdering {
 
 
         let toposort = toposort(&graph, None).map_err(|cycle| {
-            let cycle = get_cycle(&graph, cycle.node_id()).expect("failed to get a cycle");
+            let cycle = task_ordering::get_cycle(&graph, cycle.node_id()).expect("failed to get a cycle");
 
             TaskOrderingError::CyclicTasks {
                 cycle: cycle.iter().map(|idx| graph[*idx]).collect(),
@@ -220,19 +218,6 @@ fn incoming_edges<Ix: IndexType>(
         })
         .collect()
 }
-
-/// Gets a cycle containing this node
-fn get_cycle<N, E, Ix: IndexType>(
-    graph: &DiGraph<N, E, Ix>,
-    node: NodeIndex<Ix>,
-) -> Option<Vec<NodeIndex<Ix>>> {
-    let scc = kosaraju_scc(graph);
-    println!("scc: {:?}", scc);
-
-    scc.iter().find(|nodes| nodes.contains(&node)).cloned()
-}
-
-
 
 
 #[cfg(test)]

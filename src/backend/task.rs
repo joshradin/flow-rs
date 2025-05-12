@@ -6,7 +6,7 @@ use crate::backend::reusable::Reusable;
 use crate::backend::task::private::Sealed;
 use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise, PromiseExt, PromiseSet};
 use crate::promise::{IntoPromise, MapPromise};
-use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
+use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError};
 use std::any::{type_name, Any, TypeId};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
@@ -496,10 +496,16 @@ impl<T: Send> Promise for RecvPromise<T> {
     type Output = T;
 
     fn poll(&mut self) -> PollPromise<Self::Output> {
-        if !self.receiver.is_empty() {
-            PollPromise::Ready(self.receiver.recv().expect("failed to receive promise"))
-        } else {
-            PollPromise::Pending
+        match self.receiver.try_recv() {
+            Ok(t) => {
+                PollPromise::Ready(t)
+            }
+            Err(TryRecvError::Empty) => {
+                PollPromise::Pending
+            }
+            Err(TryRecvError::Disconnected) => {
+                panic!("Promise channel is disconnected")
+            }
         }
     }
 }
