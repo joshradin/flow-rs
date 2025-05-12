@@ -233,8 +233,8 @@ impl<T> PartialOrd for Weighted<T> {
 impl<T> Ord for Weighted<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         // consider step to denominator and dependents to numerator
-        let this = self.dependents * other.step;
-        let other = other.dependents * self.step;
+        let this = self.dependents.saturating_mul(other.step);
+        let other = other.dependents.saturating_mul(self.step);
         this.cmp(&other)
     }
 }
@@ -406,9 +406,20 @@ mod tests {
             dependents: 6,
             step: 6,
         };
+        let e = Weighted {
+            t: (),
+            dependents: 32,
+            step: 64,
+        };
+        let e = Weighted {
+            t: (),
+            dependents: 32,
+            step: 64,
+        };
         assert!(a > b);
         assert!(c > b);
         assert!(c > a);
         assert!(c > d);
+        assert!(e < a);
     }
 }
