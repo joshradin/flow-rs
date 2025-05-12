@@ -38,19 +38,17 @@ impl TaskOrderer for GraphTraversalTaskOrderer {
         let acyclic = Acyclic::try_from_graph(pet_graph.clone())
             .map_err(|e| TaskOrderingError::cycle(e, &pet_graph))?;
 
-        Ok(GraphTraversalTaskOrdering { max_jobs, in_use: HashSet::new(), graph: acyclic })
+        Ok(GraphTraversalTaskOrdering { in_use: HashSet::new(), graph: acyclic })
     }
 }
 
 pub struct GraphTraversalTaskOrdering {
-    max_jobs: usize,
     in_use: HashSet<TaskId>,
     graph: Acyclic<DiGraph<TaskId, ()>>,
 }
 
 impl TaskOrdering for GraphTraversalTaskOrdering {
     fn poll(&mut self) -> Result<Vec<TaskId>, TaskOrderingError> {
-        let open = self.max_jobs - self.in_use.len();
         let result = self
             .graph
             .node_indices()
@@ -62,7 +60,6 @@ impl TaskOrdering for GraphTraversalTaskOrdering {
             })
             .map(|nidx| self.graph[nidx])
             .filter(|t| !self.in_use.contains(t))
-            .take(open)
             .collect::<Vec<_>>();
         for task_id in &result {
             self.in_use.insert(*task_id);

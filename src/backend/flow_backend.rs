@@ -1,17 +1,19 @@
 //! Actual flow backend
 
+use std::cmp::Reverse;
 use crate::backend::task::{BackendTask, TaskError, TaskId};
 use crate::pool::{ThreadPool, WorkerPool};
 use crate::promise::{GetPromise, MapPromise, PollPromise, PromiseSet};
 use crate::task_ordering::{DefaultTaskOrderer, FlowGraph};
 use crate::task_ordering::{TaskOrderer, TaskOrdering, TaskOrderingError};
 use petgraph::visit::NodeRef;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
+use std::iter::Rev;
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
-use tracing::{debug, debug_span, error_span, info, Span};
+use tracing::{debug, debug_span, error_span, info, trace, Span};
 
 /// Executes flow
 #[derive(Debug)]
@@ -101,10 +103,12 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
     }
 
     /// calculates the task ordering for this flow backend
-    fn ordering(&self) -> Result<T::TaskOrdering, FlowBackendError> {
+    fn ordering(&self) -> Result<(T::TaskOrdering, BackendFlowGraph), FlowBackendError> {
         let flow_graph = BackendFlowGraph::new(self.tasks.values());
-        let ordering = self.orderer.create_ordering(flow_graph, self.worker_pool.max_size())?;
-        Ok(ordering)
+        let ordering = self
+            .orderer
+            .create_ordering(flow_graph.clone(), self.worker_pool.max_size())?;
+        Ok((ordering, flow_graph))
     }
 
     /// Executes this flow
@@ -115,18 +119,39 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                 self.tasks.len()
             );
             let instant = Instant::now();
-            let mut ordering = self.ordering()?;
+            let (mut ordering, graph) = self.ordering()?;
             debug!("Task ordering took: {:.3}ms", instant.elapsed().as_millis());
 
             // let mut tasks = std::mem::replace(&mut self.tasks, Default::default());
             let listeners = Arc::new(self.listeners.drain(..).collect::<Vec<_>>());
             let mut promises = PromiseSet::new();
 
+            let mut step: usize = 1;
+            let mut open_tasks = Vec::<(usize, usize, TaskId)>::new();
+
             while !ordering.empty() {
-                let task_ids = ordering.poll()?;
-                for task_id in task_ids {
+                let newly_ready = ordering.poll()?;
+                for task_id in newly_ready {
+                    let dependents = graph.dependents(&task_id).len();
+                    open_tasks.push((dependents, step, task_id));
+                }
+
+                let max = self.worker_pool.max_size() - self.worker_pool.active();
+                open_tasks
+                    .sort_by_cached_key(|&(dependents, c_step, _)| {
+                        Reverse((step - c_step) * dependents)
+                    });
+
+
+                let len = open_tasks.len();
+                let to_drain = max.min(len);
+                trace!("sorted tasks: {:?}", open_tasks);
+                let batch = open_tasks.drain(..to_drain)
+                    .map(|(_, _, task_id)| task_id);
+
+                for task_id in batch {
                     let mut task = self.tasks.remove(&task_id).expect("Task not found");
-                    let name =task.nickname().to_string();
+                    let name = task.nickname().to_string();
                     let listeners = listeners.clone();
                     let promise = self.worker_pool.submit(move || {
                         info!("Task {:?} started", task.nickname());
@@ -143,7 +168,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                 }
                 loop {
                     match promises.poll_any() {
-                        None |  Some(PollPromise::Pending) => {
+                        None | Some(PollPromise::Pending) => {
                             break;
                         }
                         Some(PollPromise::Ready((done, name, result))) => {
@@ -153,12 +178,18 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                                     id: done,
                                     nickname: name,
                                     error: e,
-                                })
+                                });
                             }
 
                             ordering.offer(done)?;
                         }
                     }
+                }
+                let (next, overflowed) = step.overflowing_add(1);
+                if overflowed {
+                    step = 1;
+                } else {
+                    step = next;
                 }
             }
 
@@ -233,6 +264,7 @@ impl Debug for dyn FlowBackendListener {
     }
 }
 
+#[derive(Clone)]
 pub struct BackendFlowGraph {
     tasks: HashSet<TaskId>,
     dependencies: HashMap<TaskId, HashSet<TaskId>>,
@@ -271,11 +303,12 @@ impl FlowGraph for BackendFlowGraph {
     }
 
     fn dependencies(&self, task: &TaskId) -> Self::DependsOn {
-        self.dependencies[task].clone()
+        self.dependencies.get(task).cloned().unwrap_or_default()
     }
 
     fn dependents(&self, task: &TaskId) -> Self::DependsOn {
-        self.dependencies[task].clone()
+        self.dependents.get(task).cloned().unwrap_or_default()
+
     }
 }
 
@@ -296,7 +329,7 @@ mod tests {
     fn test_ordering() {
         let backend = create_backend();
 
-        let ordering = backend.ordering().expect("failed to get ordering");
+        let (ordering, _) = backend.ordering().expect("failed to get ordering");
         println!("{:#?}", ordering);
     }
 

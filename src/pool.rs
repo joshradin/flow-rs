@@ -20,6 +20,8 @@ use tracing::{debug, error_span, event, info, instrument, trace, warn, Level, Sp
 pub trait WorkerPool {
     fn max_size(&self) -> usize;
 
+    fn active(&self) -> usize;
+
     /// Submits some work into the worker pool
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
@@ -334,6 +336,10 @@ impl Debug for ThreadPool {
 impl WorkerPool for ThreadPool {
     fn max_size(&self) -> usize {
         self.inner.lock().max_size
+    }
+
+    fn active(&self) -> usize {
+        self.inner.lock().running()
     }
 
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
