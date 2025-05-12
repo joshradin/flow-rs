@@ -1,8 +1,6 @@
 use flow_rs::action::action;
 use flow_rs::task_ordering::{GraphTraversalTaskOrderer, TaskOrderer};
 use flow_rs::*;
-use std::thread;
-use std::time::Duration;
 use test_log::test;
 
 /// This example flow will first accept a list of integer, get the square of all of the integers,

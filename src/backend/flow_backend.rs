@@ -131,6 +131,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
 
             while !ordering.empty() {
                 let newly_ready = ordering.poll()?;
+                let new_adds = !newly_ready.is_empty();
                 for task_id in newly_ready {
                     let dependents = graph.dependents(&task_id).len();
                     open_tasks.push((dependents, step, task_id));
@@ -166,6 +167,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                     });
                     promises.insert(promise);
                 }
+                let mut any_finished = false;
                 loop {
                     match promises.poll_any() {
                         None | Some(PollPromise::Pending) => {
@@ -180,16 +182,18 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                                     error: e,
                                 });
                             }
-
+                            any_finished = true;
                             ordering.offer(done)?;
                         }
                     }
                 }
-                let (next, overflowed) = step.overflowing_add(1);
-                if overflowed {
-                    step = 1;
-                } else {
-                    step = next;
+                if any_finished || new_adds {
+                    let (next, overflowed) = step.overflowing_add(1);
+                    if overflowed {
+                        step = 1;
+                    } else {
+                        step = next;
+                    }
                 }
             }
 
