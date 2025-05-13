@@ -1,6 +1,6 @@
 //! The worker pool used by flow-rs
 
-use crate::promise::{GetPromise, Just, PollPromise, Promise};
+use crate::promise::{PollPromise, Promise};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 use parking_lot::Mutex;
@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 use std::{panic, thread};
-use tracing::{debug, error_span, event, info, instrument, trace, warn, Level, Span};
+use tracing::{debug, error_span, instrument, trace, warn};
 
 
 /// Pool trait
@@ -82,11 +82,11 @@ impl WorkerThread {
                                 debug!("stop command received");
                                 break;
                             }
-                            WorkerThreadCommand::Execute(mut runnable) => {
+                            WorkerThreadCommand::Execute(runnable) => {
                                 debug!("execute command received");
                                 state.store(WorkerThreadState::Running);
                                 debug!("running runnable...");
-                                let result = catch_unwind(AssertUnwindSafe(|| runnable()));
+                                let result = catch_unwind(AssertUnwindSafe(runnable));
                                 debug!("runnable finished. result is okay={}", result.is_ok());
                                 match result {
                                     Ok(_) => {
@@ -180,7 +180,7 @@ impl InnerThreadPoolExecutor {
             let Some(callable) = opt.take() else {
                 panic!("this runnable was already called");
             };
-            let ret = panic::catch_unwind(AssertUnwindSafe(|| callable()));
+            let ret = panic::catch_unwind(AssertUnwindSafe(callable));
             sender.send(ret).expect("failed to send result");
         });
 
@@ -357,12 +357,6 @@ pub struct ThreadPoolPromise<T: Send> {
     _marker: PhantomData<T>,
 }
 
-/// A thread pool promise
-pub struct ScopedThreadPoolPromise<T: Send> {
-    receiver: Receiver<Result<T, Box<dyn Any + Send>>>,
-    _marker: PhantomData<T>,
-}
-
 impl<T: Send> Promise for ThreadPoolPromise<T> {
     type Output = T;
 
@@ -381,7 +375,7 @@ impl<T: Send> Promise for ThreadPoolPromise<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::promise::PromiseSet;
+    use crate::promise::{GetPromise, PromiseSet};
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
@@ -405,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_thread_pool_more_than_core_count() {
-        let mut pool = ThreadPool::new(4, 4, Duration::ZERO);
+        let pool = ThreadPool::new(4, 4, Duration::ZERO);
         let count = Arc::new(AtomicUsize::new(0));
         let mut promises = vec![];
 
@@ -426,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_thread_pool_return_value() {
-        let mut pool = ThreadPool::default();
+        let pool = ThreadPool::default();
         let result: Result<_, Infallible> = pool.submit(|| Ok(42)).get();
         assert_eq!(result.unwrap(), 42);
     }

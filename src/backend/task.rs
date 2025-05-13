@@ -1,25 +1,24 @@
 //! A task within the backend
 
 use crate::action::{action, Action, BoxAction, Runnable};
-use crate::backend::flow_backend::{FlowBackendError, FlowBackendInput, FlowBackendOutput};
+use crate::backend::flow_backend::{FlowBackendError, FlowBackendInput};
 use crate::backend::funnel::BackendFunnel;
 use crate::backend::recv_promise::RecvPromise;
 use crate::backend::reusable;
 use crate::backend::reusable::Reusable;
 use crate::backend::task::private::Sealed;
-use crate::promise::{BoxPromise, GetPromise, PollPromise, Promise, PromiseExt, PromiseSet};
+use crate::promise::{BoxPromise, PollPromise, Promise, PromiseExt, PromiseSet};
 use crate::promise::{IntoPromise, MapPromise};
-use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError};
+use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
 use fortuples::fortuples;
 use std::any::{type_name, Any, TypeId};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
-use tracing::{debug, trace};
+use tracing::trace;
 
 static TASK_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -71,15 +70,15 @@ impl Debug for BackendTask {
 }
 
 impl BackendTask {
-    pub fn new<A, I: 'static, O: 'static>(
+    pub fn new<A, I, O>(
         name: impl AsRef<str>,
         input: InputFlavor,
         output: impl AsOutputFlavor<Data = O>,
         action: A,
     ) -> BackendTask
     where
-        I: Send + Sync,
-        O: Send + Sync,
+        I: Send + Sync + 'static,
+        O: Send + Sync + 'static,
         A: Action<Input = I, Output = O> + 'static,
     {
         let id = TaskId::new();
@@ -99,7 +98,7 @@ impl BackendTask {
                 let safe_action = crate::action::action(move |_: ()| -> O {
                     let fake = unsafe {
                         assert_eq!(size_of::<I>(), 0, "input must have zero size");
-                        let fake: I = MaybeUninit::uninit().assume_init();
+                        let fake: I = std::mem::zeroed();
                         fake
                     };
                     action.apply(fake)
@@ -270,7 +269,7 @@ impl<T: Send + 'static> Action for ReceiveInputAction<T> {
                 panic!(
                     "failed to downcast {:?} ({:?}) to `{}`",
                     e,
-                    e.type_id(),
+                    (*e).type_id(),
                     type_name::<T>()
                 )
             });
@@ -392,6 +391,8 @@ impl Input {
         }
     }
 
+    #[cfg(debug_assertions)]
+    #[allow(unused)]
     fn check_type<T: 'static>(&self) -> Result<(), TaskError> {
         if TypeId::of::<T>() != self.input_ty {
             Err(TaskError::UnexpectedType {
@@ -499,7 +500,6 @@ impl<T: 'static + Send + Sync + Clone> AsOutputFlavor for ReusableOutput<T> {
     type Data = T;
 
     fn to_output(self, id: TaskId) -> Output {
-        let (send, receive) = bounded::<T>(1);
         let (promise, f) = create_reusable::<T>();
 
         Output {
@@ -513,8 +513,10 @@ impl<T: 'static + Send + Sync + Clone> AsOutputFlavor for ReusableOutput<T> {
     }
 }
 
+
 impl<T: 'static + Send + Clone> ReusableOutput<T> {
     /// Create a new reusable output
+    #[allow(unused)]
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -581,7 +583,7 @@ fn create_reusable<T: Send + Sync + Clone + 'static>() -> (
             .map_err(|SendError(e)| SendError(Box::new(e) as Data))?;
         Ok(())
     };
-    (promise.to_data(), f)
+    (promise.into_data(), f)
 }
 
 struct SetOutputFn(Box<dyn FnOnce(Data) -> Result<(), TaskError> + Send>);
@@ -679,45 +681,7 @@ impl InputSource<&mut Output> for Input {
     }
 }
 
-impl<const N: usize> InputSource<[&mut Output; N]> for Input {
-    type Data = [Data; N];
 
-    fn use_as_input_source(&mut self, mut other: [&mut Output; N]) -> Result<(), TaskError> {
-        let task_ids = other.iter().map(|o| o.task_id).collect::<Vec<_>>();
-        let mut promises = || -> Result<_, TaskError> {
-            Ok(other
-                .iter_mut()
-                .map(|o| match &o.kind {
-                    OutputKind::None => Err(TaskError::OutputCanNotBeUsedAsInput {
-                        output_flavor: OutputFlavor::None,
-                        input_flavor: self.flavor,
-                    }),
-                    OutputKind::Once(None) => Err(TaskError::OutputAlreadyUsed),
-                    OutputKind::Once(_) | OutputKind::Reusable(_) => Ok(o.into_promise()),
-                })
-                .collect::<Result<PromiseSet<_>, TaskError>>()?)
-        };
-
-        match self.flavor {
-            InputFlavor::None => Err(TaskError::OutputCanNotBeUsedAsInput {
-                output_flavor: OutputFlavor::None,
-                input_flavor: self.flavor,
-            }),
-            InputFlavor::Single => {
-                let promise = promises()?;
-                self.depends_on_all(task_ids);
-                self.kind = InputKind::Single(Box::new(promise.map(|p| Box::new(p) as Data)));
-                Ok(())
-            }
-            InputFlavor::Funnel => {
-                let promise = promises()?;
-                self.depends_on_all(task_ids);
-
-                todo!()
-            }
-        }
-    }
-}
 
 fortuples! {
     #[tuples::min_size(1)]
@@ -730,7 +694,7 @@ fortuples! {
         fn use_as_input_source(&mut self, mut other: #Tuple) -> Result<(), TaskError> {
             let (#(#Member,)*) = (#(#other.as_output(),)*);
             let task_ids = [#(#Member.task_id),*];
-            let mut promises = || -> Result<_, TaskError> {
+            let promises = || -> Result<_, TaskError> {
                 let promise_set = [#(#Member,)*]
                     .iter_mut()
                     .map(|o| match &o.kind {
@@ -772,8 +736,11 @@ fortuples! {
                 InputFlavor::Funnel => {
                     let promise = promises()?;
                     self.depends_on_all(task_ids);
-
-                    todo!()
+                    let InputKind::Funnel(funnel) = &mut self.kind else {
+                        unreachable!()
+                    };
+                    funnel.insert(promise.map(|t| Box::new(t) as Data));
+                    Ok(())
                 }
             }
         }
@@ -782,19 +749,19 @@ fortuples! {
 
 }
 
-fortuples! {
-    #[tuples::min_size(1)]
-    impl InputSource<(PhantomData<#Tuple>, [&mut Output; #len(Tuple)])> for Input
-    where
-        #(#Member: OutputWithType,)*
-    {
-        type Data = #Tuple;
-
-        fn use_as_input_source(&mut self, other: (PhantomData<#Tuple>, [&mut Output; #len(Tuple)])) -> Result<(), TaskError> {
-            todo!()
-        }
-    }
-}
+// fortuples! {
+//     #[tuples::min_size(1)]
+//     impl InputSource<(PhantomData<#Tuple>, [&mut Output; #len(Tuple)])> for Input
+//     where
+//         #(#Member: OutputWithType,)*
+//     {
+//         type Data = #Tuple;
+//
+//         fn use_as_input_source(&mut self, other: (PhantomData<#Tuple>, [&mut Output; #len(Tuple)])) -> Result<(), TaskError> {
+//             todo!()
+//         }
+//     }
+// }
 
 impl InputSource<&mut FlowBackendInput> for Input {
     type Data = Data;
@@ -820,7 +787,6 @@ impl InputSource<&mut FlowBackendInput> for Input {
     }
 }
 
-
 pub trait OutputWithType {
     type T;
 
@@ -835,7 +801,7 @@ impl<'a, T> TypedOutput<'a, T> {
     }
 }
 
-impl<'a, T> OutputWithType for TypedOutput<'a, T> {
+impl<T> OutputWithType for TypedOutput<'_, T> {
     type T = T;
 
     fn as_output(&mut self) -> &mut Output {
@@ -984,9 +950,10 @@ mod private {
 mod tests {
     use super::*;
     use crate::action::action;
-    use crate::backend::task::test_fixtures::MockTaskInput;
-    use std::thread;
     use crate::backend::flow_backend::FlowBackendOutput;
+    use crate::backend::task::test_fixtures::MockTaskInput;
+    use crate::promise::GetPromise;
+    use std::thread;
 
     #[test]
     fn test_task_id() {
@@ -1038,7 +1005,9 @@ mod tests {
                 assert_eq!(i, 32);
             }),
         );
-        task.input_mut().set_source(&mut input).expect("failed to set input");
+        task.input_mut()
+            .set_source(&mut input)
+            .expect("failed to set input");
         input.send(Box::new(32_i32)).expect("failed to send input");
         task.run().expect("failed to run task");
     }
@@ -1050,14 +1019,17 @@ mod tests {
             "task",
             InputFlavor::None,
             SingleOutput::new(),
-            action(move |_: ()| {
-                32_i32
-            }),
+            action(move |_: ()| 32_i32),
         );
-        output.set_source(task.output_mut()).expect("failed to set output");
+        output
+            .set_source(task.output_mut())
+            .expect("failed to set output");
 
         task.run().expect("failed to run task");
-        let t =  *output.get().downcast::<i32>().expect("failed to downcast output");
+        let t = *output
+            .get()
+            .downcast::<i32>()
+            .expect("failed to downcast output");
         assert_eq!(t, 32_i32);
     }
 

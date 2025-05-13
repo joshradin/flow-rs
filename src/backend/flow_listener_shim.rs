@@ -41,7 +41,7 @@ impl FlowBackendListener for FlowListenerShim {
             .for_each(|f| f.task_finished(id, nickname, result));
     }
 
-    fn finished(&mut self, result: Result<(), &FlowBackendError>) {
+    fn finished(&mut self, _result: Result<(), &FlowBackendError>) {
         // handled separately
     }
 }

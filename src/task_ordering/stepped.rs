@@ -1,4 +1,3 @@
-use crate::backend::task::BackendTask;
 use crate::task_ordering::{FlowGraph, TaskOrderer, TaskOrdering, TaskOrderingError};
 use crate::{task_ordering, TaskId};
 use petgraph::adj;
@@ -7,7 +6,7 @@ use petgraph::algo::tred::dag_to_toposorted_adjacency_list;
 use petgraph::algo::{toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use tracing::debug;
 
 #[derive(Default)]
@@ -65,7 +64,7 @@ impl TaskOrdering for SteppedTaskOrdering {
 
 impl SteppedTaskOrdering {
     /// Attempts to create a new task ordering
-    fn new<'a, G>(flow_graph: G, w: usize) -> Result<Self, TaskOrderingError>
+    fn new<G>(flow_graph: G, w: usize) -> Result<Self, TaskOrderingError>
     where
         G:  FlowGraph,
     {
@@ -132,8 +131,8 @@ impl SteppedTaskOrdering {
         }
 
         let mut steps: Vec<_> = levels
-            .into_iter()
-            .map(|(_, set)| {
+            .into_values()
+            .map(|set| {
                 set.into_iter()
                    .map(|i| (graph[toposort[i.index()]], false))
                    .collect()
@@ -200,12 +199,6 @@ fn lexico_topological_sort<Ix: IndexType>(
     ordering
 }
 
-fn map_graph(
-    g: &DiGraph<TaskId, ()>,
-    tasks: &HashMap<TaskId, &BackendTask>,
-) -> DiGraph<String, ()> {
-    g.map(|_, w| tasks[w].nickname().to_string(), |_, e| ())
-}
 
 fn incoming_edges<Ix: IndexType>(
     n: NodeIndex<Ix>,

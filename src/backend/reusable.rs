@@ -69,7 +69,7 @@ where
     }
 
     /// Converts this into a data promise. Panics if it can't take exclusive access over the interior.
-    pub fn to_data(self) -> Reusable<'static, Data, BoxPromise<'static, Data>>
+    pub fn into_data(self) -> Reusable<'static, Data, BoxPromise<'static, Data>>
     where
         T: Clone + 'static,
         P: 'static,

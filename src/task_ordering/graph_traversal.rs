@@ -1,8 +1,8 @@
-use std::collections::HashSet;
 use crate::task_ordering::{FlowGraph, TaskOrderer, TaskOrdering, TaskOrderingError};
 use crate::TaskId;
 use petgraph::acyclic::Acyclic;
 use petgraph::prelude::*;
+use std::collections::HashSet;
 use tracing::trace;
 
 /// Attempts to create a task order by directly working with a graph
@@ -15,7 +15,7 @@ impl TaskOrderer for GraphTraversalTaskOrderer {
     fn create_ordering<G: FlowGraph>(
         &self,
         graph: G,
-        max_jobs: usize,
+        _max_jobs: usize,
     ) -> Result<Self::TaskOrdering, TaskOrderingError> {
         let mut pet_graph = DiGraph::new();
         for t in graph.tasks().into_iter() {
@@ -38,7 +38,10 @@ impl TaskOrderer for GraphTraversalTaskOrderer {
         let acyclic = Acyclic::try_from_graph(pet_graph.clone())
             .map_err(|e| TaskOrderingError::cycle(e, &pet_graph))?;
 
-        Ok(GraphTraversalTaskOrdering { in_use: HashSet::new(), graph: acyclic })
+        Ok(GraphTraversalTaskOrdering {
+            in_use: HashSet::new(),
+            graph: acyclic,
+        })
     }
 }
 
@@ -71,10 +74,11 @@ impl TaskOrdering for GraphTraversalTaskOrdering {
     }
 
     fn offer(&mut self, task: TaskId) -> Result<(), TaskOrderingError> {
-        let node_idx = self.graph.node_indices()
-            .find(|i| self.graph[*i] == task).ok_or_else(|| {
-            TaskOrderingError::UnknownTask { task }
-        })?;
+        let node_idx = self
+            .graph
+            .node_indices()
+            .find(|i| self.graph[*i] == task)
+            .ok_or(TaskOrderingError::UnknownTask { task })?;
 
         self.in_use.remove(&task);
         self.graph.remove_node(node_idx);

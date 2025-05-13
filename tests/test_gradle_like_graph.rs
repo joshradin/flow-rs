@@ -1,7 +1,7 @@
 //! Tests a gradle-like scenario
 
-use flow_rs::task_ordering::{GraphTraversalTaskOrderer, TaskOrderer};
-use flow_rs::{DependsOn, FlowBuilder, FlowError, TaskRef};
+use flow_rs::task_ordering::GraphTraversalTaskOrderer;
+use flow_rs::{FlowBuilder, FlowError};
 use std::time::Duration;
 use test_log::test;
 use flow_rs::listener::PrintTaskListener;

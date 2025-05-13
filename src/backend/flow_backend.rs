@@ -13,6 +13,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Instant;
+use static_assertions::assert_impl_all;
 use thiserror::Error;
 use tracing::{debug, error_span, info};
 
@@ -26,6 +27,8 @@ pub struct FlowBackend<T: TaskOrderer = DefaultTaskOrderer, P: WorkerPool = Thre
     input: FlowBackendInput,
     output: FlowBackendOutput,
 }
+
+assert_impl_all!(FlowBackend: Send);
 
 impl FlowBackend {
     /// Creates a new flow backend
@@ -245,6 +248,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
         &mut self.output
     }
 
+    #[allow(unused)]
     pub fn input(&self) -> &FlowBackendInput {
         &self.input
     }
@@ -292,7 +296,7 @@ impl Default for FlowBackendInput {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FlowBackendOutput {
     promise: Option<BoxPromise<'static, Data>>,
 }
@@ -311,13 +315,7 @@ impl FlowBackendOutput {
     }
 
     pub fn has_source(&self) -> bool {
-        matches!(self.promise, Some(_))
-    }
-}
-
-impl Default for FlowBackendOutput {
-    fn default() -> Self {
-        Self { promise: None }
+        self.promise.is_some()
     }
 }
 
@@ -416,7 +414,7 @@ impl BackendFlowGraph {
             tasks.insert(task.id());
             dependencies.insert(task.id(), task.dependencies().clone());
             for dep in task.dependencies() {
-                dependents.entry(dep.clone()).or_default().insert(task.id());
+                dependents.entry(*dep).or_default().insert(task.id());
             }
         });
 

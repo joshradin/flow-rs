@@ -1,6 +1,7 @@
 //! Provides the [`Promise`] type, a synchronous equivalent of a [`Future`].
 
 use std::fmt::{Debug, Formatter};
+use std::mem;
 use std::thread::yield_now;
 use std::time::{Duration, Instant};
 
@@ -144,7 +145,7 @@ impl<T: Send> Promise for Just<T> {
     }
 }
 
-impl<'lf, T> Promise for Box<dyn Promise<Output = T> + 'lf> {
+impl<T> Promise for Box<dyn Promise<Output = T> + '_> {
     type Output = T;
 
     fn poll(&mut self) -> PollPromise<Self::Output> {
@@ -152,7 +153,7 @@ impl<'lf, T> Promise for Box<dyn Promise<Output = T> + 'lf> {
     }
 }
 
-impl<'lf, T> Debug for Box<dyn Promise<Output = T> + 'lf> {
+impl<T> Debug for Box<dyn Promise<Output = T> + '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoxPromise").finish_non_exhaustive()
     }
@@ -163,6 +164,12 @@ pub type BoxPromise<'lf, T> = Box<dyn Promise<Output = T> + 'lf>;
 pub struct PromiseSet<'lf, T: Send + 'lf> {
     finished: Vec<T>,
     promises: Vec<BoxPromise<'lf, T>>,
+}
+
+impl<'lf, T: Send + 'lf> Default for PromiseSet<'lf, T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<'lf, T: Send + 'lf> PromiseSet<'lf, T> {
@@ -215,7 +222,7 @@ impl<'lf, T: Send + 'lf> Promise for PromiseSet<'lf, T> {
         let Self { finished, promises } = self;
 
         let mut not_done = vec![];
-        for mut promise in promises.drain(..) {
+        for mut promise in mem::take(promises) {
             match promise.poll() {
                 PollPromise::Ready(ready) => {
                     finished.push(ready);
@@ -229,7 +236,7 @@ impl<'lf, T: Send + 'lf> Promise for PromiseSet<'lf, T> {
         promises.extend(not_done);
 
         if promises.is_empty() {
-            PollPromise::Ready(finished.drain(..).collect())
+            PollPromise::Ready(mem::take(finished))
         } else {
             PollPromise::Pending
         }
