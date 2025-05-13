@@ -150,7 +150,7 @@ impl<'lf, T: Send + Sync + 'lf, P: Promise<Output = T> + 'lf> Promise for IntoPr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::promise::Just;
+    use crate::promise::{GetPromise, Just};
 
     #[test]
     fn test_reusuable() {
