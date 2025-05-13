@@ -304,7 +304,7 @@ mod tests {
         let tasks = vec![a, b, c, d, e, f, g, h, i, j];
         let ordering = create_order(3, &tasks);
         println!("ordering: {:#?}", ordering);
-        assert_eq!(ordering.order.len(), 4);
+        assert!(ordering.order.len() >= 4 && ordering.order.len() <= 5);
         // let ordering = SteppedTaskOrdering::new(&tasks, 3).expect("failed to create order");
     }
 

@@ -1,18 +1,25 @@
 use crate::action::{Action, IntoAction};
 use crate::backend::flow_backend::{FlowBackend, FlowBackendError};
-use crate::backend::task::{BackendTask, Data, Input, InputSource, Output, SingleOutput, TaskError, TaskId, TypedOutput};
+use crate::backend::flow_listener_shim::FlowListenerShim;
+use crate::backend::task::{
+    BackendTask, Input, InputSource, Output, SingleOutput, TaskError, TaskId, TypedOutput,
+};
 use crate::flow::private::Sealed;
+use crate::listener::FlowListener;
 use crate::pool::{ThreadPool, WorkerPool};
+use crate::promise::{IntoPromise, PromiseExt};
+use crate::task_ordering::{format_cycle, TaskOrderingError};
 use crate::task_ordering::{DefaultTaskOrderer, SteppedTaskOrderer, TaskOrderer};
 use fortuples::fortuples;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use static_assertions::{assert_impl_all, assert_not_impl_all};
 use std::any::TypeId;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ops::Index;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 use thiserror::Error;
-use crate::promise::{IntoPromise, PromiseExt};
 
 type StrongFlowBackend<T = DefaultTaskOrderer> = Arc<RwLock<FlowBackend<T>>>;
 type WeakFlowBackend<T = DefaultTaskOrderer> = Weak<RwLock<FlowBackend<T>>>;
@@ -43,6 +50,11 @@ impl<I, O, T> FlowBuilder<I, O, T> {
             _marker: PhantomData,
         }
     }
+
+    pub fn with_thread_pool(mut self, core: usize, max: usize, keep_alive: Duration) -> Self {
+        self.pool = Some(ThreadPool::new(core, max, keep_alive));
+        self
+    }
 }
 
 impl<I: Send, O: Send, T: TaskOrderer + Default> FlowBuilder<I, O, T> {
@@ -51,6 +63,8 @@ impl<I: Send, O: Send, T: TaskOrderer + Default> FlowBuilder<I, O, T> {
         let orderer = self.orderer.unwrap_or_default();
         Flow {
             _marker: Default::default(),
+            nicknames: Default::default(),
+            listeners: vec![],
             backend: Arc::new(RwLock::new(FlowBackend::with_task_orderer_and_worker_pool(
                 orderer, pool,
             ))),
@@ -63,12 +77,10 @@ impl FlowBuilder<(), (), ()> {}
 /// Create a flow graph, with an input and an ultimate output
 ///
 /// Flows are built from a set of tasks that can be run in a concurrent manner.
-pub struct Flow<
-    I: Send = (),
-    O: Send = (),
-    T: TaskOrderer = DefaultTaskOrderer,
-> {
+pub struct Flow<I: Send = (), O: Send = (), T: TaskOrderer = DefaultTaskOrderer> {
     _marker: PhantomData<fn(I) -> O>,
+    nicknames: HashMap<String, TaskId>,
+    listeners: Vec<Box<dyn FlowListener + Send + Sync>>,
     backend: StrongFlowBackend<T>,
 }
 
@@ -78,6 +90,8 @@ impl<I: Send, O: Send> Flow<I, O> {
         let pool: ThreadPool = Default::default();
         Self {
             _marker: PhantomData,
+            nicknames: Default::default(),
+            listeners: vec![],
             backend: Arc::new(RwLock::new(FlowBackend::with_task_orderer_and_worker_pool(
                 SteppedTaskOrderer::default(),
                 pool,
@@ -97,6 +111,16 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
         FlowOutput::new(&self.backend)
     }
 
+    /// Sets a depends on relationship
+    pub fn depends_on(&mut self, t: TaskId, u: TaskId) -> Result<(), FlowError> {
+        let mut locked = self.backend.write();
+        let t = locked
+            .get_mut(t)
+            .ok_or_else(|| FlowError::TaskNotFound(t))?;
+        t.input_mut().depends_on(u);
+        Ok(())
+    }
+
     /// Adds a step to this flow
     pub fn create<AI, AO, M, A: IntoAction<AI, AO, M> + 'static>(
         &mut self,
@@ -110,18 +134,58 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
     {
         let (input_flavor, action) = step.into_action();
         let bk = BackendTask::new::<_, AI, AO>(name, input_flavor, SingleOutput::new(), action);
+        self.nicknames.insert(bk.nickname().to_string(), bk.id());
         let s = TaskReference::<AI, AO, T>::new(&bk, &self.backend);
         self.backend.write().add(bk);
         s
     }
 
+    /// Attempts to find a task with the given name
+    pub fn find(&self, name: impl AsRef<str>) -> Option<TaskId> {
+        self.nicknames.get(name.as_ref()).copied()
+    }
+
+    /// Add a [`FlowListener`] to this flow
+    pub fn add_listener<L>(&mut self, listener: L)
+    where
+        L: FlowListener + Send + Sync + 'static,
+    {
+        self.listeners.push(Box::new(listener));
+    }
+
     fn apply_(self, i: I, expect_result: bool) -> Result<Option<O>, FlowError> {
         let mut backend = self.backend.write();
+        let listeners = Arc::new(Mutex::new(self.listeners));
+        let shim = FlowListenerShim::new(&listeners);
+        backend.add_listener(shim);
         backend.input_mut().send(Box::new(i))?;
-        backend.execute()?;
+        let result = backend.execute().map_err(|e| match e {
+            FlowBackendError::TaskOrdering(TaskOrderingError::CyclicTasks { cycle }) => {
+                let cycled = cycle
+                    .into_iter()
+                    .map(|id| {
+                        let id = backend.get(id).unwrap();
+                        id.nickname().to_string()
+                    })
+                    .collect();
+                FlowError::CycleError { members: cycled }
+            }
+            other => FlowError::from(other),
+        });
+
+        listeners.lock()
+            .iter_mut()
+            .for_each(|l| {
+                l.finished(result.as_ref().map(|_| ()))
+            });
+
+        if let Err(e) = result {
+            return Err(e);
+        }
+
         if expect_result {
             if !backend.output().has_source() {
-                return Err(FlowError::NoOutputTask)
+                return Err(FlowError::NoOutputTask);
             }
 
             let promise = backend.output_mut().into_promise();
@@ -129,10 +193,8 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
                 Ok(ok) => {
                     let o: O = *ok.downcast().expect("Failed to downcast result");
                     Ok(Some(o))
-                },
-                Err(_) => {
-                    Err(FlowError::OutputExpected)
                 }
+                Err(_) => Err(FlowError::OutputExpected),
             }
         } else {
             Ok(None)
@@ -142,13 +204,13 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
     /// Applies this flow with a given input
     pub fn apply(self, i: I) -> Result<O, FlowError> {
         self.apply_(i, true)?
-            .ok_or_else(|| {
-                FlowError::OutputExpected
-            })
+            .ok_or_else(|| FlowError::OutputExpected)
     }
+
+    fn for_each_listener<F: FnMut(&mut dyn FlowListener)>(&mut self, mut f: F) {}
 }
 
-impl<O: Send + Sync + 'static> Flow<(), O> {
+impl<O: Send + Sync + 'static, TO: TaskOrderer> Flow<(), O, TO> {
     /// Gets the end result of this flow
     #[inline]
     pub fn get(self) -> Result<O, FlowError> {
@@ -156,11 +218,20 @@ impl<O: Send + Sync + 'static> Flow<(), O> {
     }
 }
 
-impl<I: Send + Sync + 'static> Flow<I, ()> {
+impl<I: Send + Sync + 'static, TO: TaskOrderer> Flow<I, (), TO> {
     /// Runs this flow with the given input
     #[inline]
     pub fn accept(self, i: I) -> Result<(), FlowError> {
         self.apply_(i, false)?;
+        Ok(())
+    }
+}
+
+impl<TO: TaskOrderer> Flow<(), (), TO> {
+    /// Runs this flow with the given input
+    #[inline]
+    pub fn run(self) -> Result<(), FlowError> {
+        self.apply_((), false)?;
         Ok(())
     }
 }
@@ -180,9 +251,7 @@ impl<I, T: TaskOrderer> FlowInput<I, T> {
     }
 }
 
-impl<I> FlowInput<Vec<I>> {
-
-}
+impl<I> FlowInput<Vec<I>> {}
 
 /// Represents the output of a flow
 pub struct FlowOutput<I, T: TaskOrderer = DefaultTaskOrderer> {
@@ -264,7 +333,10 @@ impl<I, O, TO: TaskOrderer> TaskReference<I, O, TO> {
     }
 }
 
-fn transaction_mut<T, U: TaskOrderer,  F: FnOnce(&mut FlowBackend<U>) -> T>(weak: &WeakFlowBackend<U>, f: F) -> T {
+fn transaction_mut<T, U: TaskOrderer, F: FnOnce(&mut FlowBackend<U>) -> T>(
+    weak: &WeakFlowBackend<U>,
+    f: F,
+) -> T {
     let upgrade = weak.upgrade().expect("Weak instance lost");
     let mut backend = upgrade.write();
     f(&mut backend)
@@ -274,6 +346,8 @@ impl<I, O, TO: TaskOrderer> Sealed for TaskReference<I, O, TO> {}
 
 #[derive(Debug, Error)]
 pub enum FlowError {
+    #[error("{}", format_cycle(.members))]
+    CycleError { members: Vec<String> },
     #[error(transparent)]
     TaskError(#[from] TaskError),
     #[error(transparent)]
@@ -378,8 +452,8 @@ pub trait FlowsInto<Other>: Sized {
 
 fn try_set_flow<T, U, TO: TaskOrderer>(this: &T, other: &U) -> Result<(), FlowError>
 where
-    T: TaskRefWithBackend<TO=TO>,
-    U: TaskRefWithBackend<TO=TO>,
+    T: TaskRefWithBackend<TO = TO>,
+    U: TaskRefWithBackend<TO = TO>,
 {
     let weak = this.backend();
     let this_id = *this.id();
@@ -399,7 +473,7 @@ fn try_set_flow_all<Tuple, T, U, const N: usize, const M: usize>(
 where
     Tuple: Send + 'static,
     T: TaskRefWithBackend,
-    U: TaskRefWithBackend<TO=T::TO>,
+    U: TaskRefWithBackend<TO = T::TO>,
     Input: for<'a> InputSource<(PhantomData<Tuple>, [&'a mut Output; N]), Data = Tuple>,
 {
     assert_eq!(N + 1, M, "M must be N + 1");
@@ -429,8 +503,8 @@ where
 #[diagnostic::do_not_recommend]
 impl<T, U, TO: TaskOrderer> FlowsInto<U> for T
 where
-    T: TaskRefWithBackend<TO=TO,Out = U::In>,
-    U: TaskRefWithBackend<TO=TO>,
+    T: TaskRefWithBackend<TO = TO, Out = U::In>,
+    U: TaskRefWithBackend<TO = TO>,
 {
     type Out = Result<U, FlowError>;
 
@@ -442,8 +516,8 @@ where
 #[diagnostic::do_not_recommend]
 impl<T, I, U, TO: TaskOrderer> FlowsInto<U> for Vec<T>
 where
-    T: TaskRefWithBackend<Out = I, TO=TO>,
-    U: FunneledStepRef<In: FromIterator<I>, TO=TO>,
+    T: TaskRefWithBackend<Out = I, TO = TO>,
+    U: FunneledStepRef<In: FromIterator<I>, TO = TO>,
 {
     type Out = Result<U, FlowError>;
 
@@ -489,6 +563,42 @@ fortuples! {
     }
 }
 
+/// Sets a depends on relation
+pub trait DependsOn<U> {
+    fn depends_on(&mut self, u: U) -> Result<(), FlowError>;
+}
+
+impl<T, U> DependsOn<&U> for T
+where
+    T: TaskRefWithBackend,
+    U: TaskRefWithBackend<TO = T::TO>,
+{
+    fn depends_on(&mut self, u: &U) -> Result<(), FlowError> {
+        let t_id = *self.id();
+        let u_id = *u.id();
+        transaction_mut(self.backend(), move |backend| -> Result<(), FlowError> {
+            let (t, u) = backend
+                .get_mut2(t_id, u_id)
+                .ok_or_else(|| FlowError::NondisjointedTasks)?;
+            t.input_mut().depends_on(u.id());
+            Ok(())
+        })
+    }
+}
+
+impl<T: TaskRefWithBackend> DependsOn<TaskId> for T {
+    fn depends_on(&mut self, u: TaskId) -> Result<(), FlowError> {
+        let t_id = *self.id();
+        transaction_mut(self.backend(), move |backend| -> Result<(), FlowError> {
+            let t = backend
+                .get_mut(t_id)
+                .ok_or_else(|| FlowError::TaskNotFound(t_id))?;
+            t.input_mut().depends_on(u);
+            Ok(())
+        })
+    }
+}
+
 /// A type that has an associated task id
 pub trait TaskRef {
     /// Gets the id of this task ref
@@ -516,7 +626,6 @@ impl<I, O, TO: TaskOrderer> TaskRefWithBackend for AnyStepRef<I, O, TO> {
     type Out = O;
     type TO = TO;
 
-
     fn backend(&self) -> &WeakFlowBackend<TO> {
         &self.0
     }
@@ -536,7 +645,6 @@ impl<I, O, TO: TaskOrderer> TaskRefWithBackend for TaskReference<I, O, TO> {
     type In = I;
     type Out = O;
     type TO = TO;
-
 
     fn backend(&self) -> &WeakFlowBackend<TO> {
         &self.backend
@@ -597,21 +705,17 @@ impl<T: TaskRefWithBackend> TaskRef for Funneled<T> {
     }
 }
 
-
-
 trait FunneledStepRef: TaskRefWithBackend {}
 impl<T: TaskRefWithBackend> FunneledStepRef for Funneled<T> {}
 impl<T: FunneledStepRef> FunneledStepRef for Reusable<T> {}
 
-impl<I, T: TaskRefWithBackend<In=I>> FlowsInto<T> for FlowInput<I, T::TO> {
+impl<I, T: TaskRefWithBackend<In = I>> FlowsInto<T> for FlowInput<I, T::TO> {
     type Out = Result<T, FlowError>;
 
     fn flows_into(self, other: T) -> Self::Out {
         transaction_mut(&self.backend, |backend| -> Result<(), FlowError> {
-            let (task, input)= backend.get_mut_and_input(*other.id());
-            let t = task.ok_or_else(|| {
-                FlowError::TaskNotFound(*other.id())
-            })?;
+            let (task, input) = backend.get_mut_and_input(*other.id());
+            let t = task.ok_or_else(|| FlowError::TaskNotFound(*other.id()))?;
             t.input_mut().set_source(input)?;
             Ok(())
         })?;
@@ -620,16 +724,13 @@ impl<I, T: TaskRefWithBackend<In=I>> FlowsInto<T> for FlowInput<I, T::TO> {
     }
 }
 
-
-impl<O, T: TaskRefWithBackend<Out=O>> FlowsInto<FlowOutput<O, T::TO>> for T {
+impl<O, T: TaskRefWithBackend<Out = O>> FlowsInto<FlowOutput<O, T::TO>> for T {
     type Out = Result<(), FlowError>;
 
     fn flows_into(self, _other: FlowOutput<O, T::TO>) -> Self::Out {
         transaction_mut(&self.backend(), |backend| -> Result<(), FlowError> {
-            let (task, output)= backend.get_mut_and_output(*self.id());
-            let t = task.ok_or_else(|| {
-                FlowError::TaskNotFound(*self.id())
-            })?;
+            let (task, output) = backend.get_mut_and_output(*self.id());
+            let t = task.ok_or_else(|| FlowError::TaskNotFound(*self.id()))?;
             output.set_source(t.output_mut())?;
             Ok(())
         })?;

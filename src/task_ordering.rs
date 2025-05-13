@@ -59,7 +59,7 @@ pub trait TaskOrderer {
     fn create_ordering<G: FlowGraph>(&self, graph: G, max_jobs: usize) -> Result<Self::TaskOrdering, TaskOrderingError>;
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum TaskOrderingError {
     #[error("A cycle was detected. {}", format_cycle(cycle))]
     CyclicTasks { cycle: Vec<TaskId> },
@@ -73,7 +73,7 @@ impl TaskOrderingError {
     }
 }
 
-fn format_cycle<T: Display>(cycle: &Vec<T>) -> String {
+pub fn format_cycle<T: Display>(cycle: &Vec<T>) -> String {
     cycle
         .iter()
         .map(|id| format!("{}", id))

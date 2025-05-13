@@ -25,7 +25,7 @@ let result := flow.apply(I)
 
 ### I/O
 By default, all data inputs and outputs are use-once, however modifiers can be used to allow either multiple
-steps to re-use the same input. Array-like data types can be broken down into indices.
+steps to re-use the same input. ~~Array-like data types can be broken down into indices.~~
 
 ```psuedocode
 # Illegal multiple tasks using same input
@@ -36,7 +36,7 @@ taskA.flows_into(taskB)
 taskA.flows_into(taskB) # NOT ALLOWED
 
 # Correct usage
-let taskA := flow.create("A", fn(I) -> Cloned<T>)
+let taskA := flow.create("A", fn(I) -> T).reusable()
 let taskB := flow.create("B", fn(T) -> O)
 let taskC := flow.create("C", fn(T) -> U)
 taskA.flows_into(taskB)

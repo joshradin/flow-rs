@@ -1,5 +1,6 @@
 //! Actual flow backend
 
+use std::any::Any;
 use crate::backend::recv_promise::RecvPromise;
 use crate::backend::task::{BackendTask, Data, InputSource, Output, TaskError, TaskId};
 use crate::pool::{ThreadPool, WorkerPool};
@@ -16,15 +17,17 @@ use std::fmt::{Debug, Formatter};
 use std::iter::Rev;
 use std::sync::Arc;
 use std::time::Instant;
+use parking_lot::Mutex;
 use thiserror::Error;
 use tracing::{debug, debug_span, error_span, info, trace, Span};
+use crate::FlowError;
 
 /// Executes flow
 #[derive(Debug)]
 pub struct FlowBackend<T: TaskOrderer = DefaultTaskOrderer, P: WorkerPool = ThreadPool> {
     worker_pool: P,
     orderer: T,
-    listeners: Vec<Box<dyn FlowBackendListener>>,
+    listeners: Vec<Mutex<Box<dyn FlowBackendListener>>>,
     tasks: HashMap<TaskId, BackendTask>,
     input: FlowBackendInput,
     output: FlowBackendOutput,
@@ -126,7 +129,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
 
     /// Add a backend listener
     pub fn add_listener<L: FlowBackendListener + 'static>(&mut self, listener: L) {
-        self.listeners.push(Box::new(listener));
+        self.listeners.push(Mutex::new(Box::new(listener)));
     }
 
     /// calculates the task ordering for this flow backend
@@ -140,7 +143,10 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
 
     /// Executes this flow
     pub fn execute(&mut self) -> Result<(), FlowBackendError> {
-        error_span!("execute").in_scope(|| {
+        let result = error_span!("execute").in_scope(|| {
+            self.listeners.iter().for_each(|i| {
+                i.lock().started()
+            });
             debug!(
                 "Calculating task ordering for {} tasks...",
                 self.tasks.len()
@@ -172,7 +178,6 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
 
                 let len = open_tasks.len();
                 let to_drain = max.min(len);
-                info!("task heap: {:?}", open_tasks);
                 let batch = {
                     let mut batch = Vec::with_capacity(to_drain);
                     for _ in 0..to_drain {
@@ -188,11 +193,11 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                     let promise = self.worker_pool.submit(move || {
                         info!("Task {:?} started", task.nickname());
                         listeners.iter().for_each(|i| {
-                            i.task_started(task.id(), task.nickname());
+                            i.lock().task_started(task.id(), task.nickname());
                         });
                         let r = task.run();
                         listeners.iter().for_each(|i| {
-                            i.task_finished(task.id(), task.nickname(), &r);
+                            i.lock().task_finished(task.id(), task.nickname(), r.as_ref().map(|s| *s));
                         });
                         (task_id, name, r)
                     });
@@ -229,7 +234,11 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
             }
 
             Ok(())
-        })
+        });
+        self.listeners.iter().for_each(|i| {
+            i.lock().finished(result.as_ref().map(|_| ()));
+        });
+        result
     }
 
     pub fn output(&self) -> &FlowBackendOutput {
@@ -379,10 +388,13 @@ pub enum FlowBackendError {
 
 /// Listens to events produced by the flow backend
 pub trait FlowBackendListener: Sync + Send {
+    fn started(&mut self);
     /// Run when a task is started
-    fn task_started(&self, id: TaskId, nickname: &str);
+    fn task_started(&mut self, id: TaskId, nickname: &str);
     /// Run when a task finished
-    fn task_finished(&self, id: TaskId, nickname: &str, result: &Result<(), TaskError>);
+    fn task_finished(&mut self, id: TaskId, nickname: &str, result: Result<(), &TaskError>);
+    /// Ran once the entire flow is done
+    fn finished(&mut self, result: Result<(), &FlowBackendError>);
 }
 
 impl Debug for dyn FlowBackendListener {
