@@ -4,10 +4,10 @@ use crate::{task_ordering, TaskId};
 use petgraph::adj;
 use petgraph::adj::{IndexType, UnweightedList};
 use petgraph::algo::tred::dag_to_toposorted_adjacency_list;
-use petgraph::algo::{kosaraju_scc, toposort};
+use petgraph::algo::{toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use tracing::debug;
 
 #[derive(Default)]

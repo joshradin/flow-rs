@@ -1,17 +1,16 @@
-use std::fmt::Display;
-use petgraph::algo::{kosaraju_scc, Cycle};
-use petgraph::Graph;
-use petgraph::prelude::NodeIndex;
-use thiserror::Error;
-use petgraph::adj::IndexType;
-use petgraph::graph::DiGraph;
 use crate::TaskId;
+use petgraph::adj::IndexType;
+use petgraph::algo::{kosaraju_scc, Cycle};
+use petgraph::graph::DiGraph;
+use petgraph::prelude::NodeIndex;
+use std::fmt::Display;
+use thiserror::Error;
 
 mod stepped;
 mod graph_traversal;
 
-pub use stepped::SteppedTaskOrderer;
 pub use graph_traversal::GraphTraversalTaskOrderer;
+pub use stepped::SteppedTaskOrderer;
 
 pub type DefaultTaskOrderer = stepped::SteppedTaskOrderer;
 

@@ -25,7 +25,7 @@ impl FlowListener for PrintTaskListener {
     }
 
     fn task_finished(&mut self, id: TaskId, nickname: &str, result: Result<(), &TaskError>) {
-        println!("== finished: {} ==", nickname);
+        println!("== finished: {}. {result:?} ==", nickname);
     }
 }
 

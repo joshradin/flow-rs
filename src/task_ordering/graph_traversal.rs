@@ -3,7 +3,7 @@ use crate::task_ordering::{FlowGraph, TaskOrderer, TaskOrdering, TaskOrderingErr
 use crate::TaskId;
 use petgraph::acyclic::Acyclic;
 use petgraph::prelude::*;
-use tracing::{info, trace};
+use tracing::trace;
 
 /// Attempts to create a task order by directly working with a graph
 #[derive(Default)]

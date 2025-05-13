@@ -1,26 +1,20 @@
 //! Actual flow backend
 
-use std::any::Any;
 use crate::backend::recv_promise::RecvPromise;
-use crate::backend::task::{BackendTask, Data, InputSource, Output, TaskError, TaskId};
+use crate::backend::task::{BackendTask, Data, Output, TaskError, TaskId};
 use crate::pool::{ThreadPool, WorkerPool};
-use crate::promise::{
-    BoxPromise, GetPromise, IntoPromise, MapPromise, PollPromise, Promise, PromiseSet,
-};
+use crate::promise::{BoxPromise, IntoPromise, PollPromise, PromiseSet};
 use crate::task_ordering::{DefaultTaskOrderer, FlowGraph};
 use crate::task_ordering::{TaskOrderer, TaskOrdering, TaskOrderingError};
-use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError};
-use petgraph::visit::NodeRef;
-use std::cmp::{Ordering, Reverse};
-use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use crossbeam::channel::{bounded, Receiver, SendError, Sender, TryRecvError};
+use parking_lot::Mutex;
+use std::cmp::{Ordering};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
-use std::iter::Rev;
 use std::sync::Arc;
 use std::time::Instant;
-use parking_lot::Mutex;
 use thiserror::Error;
-use tracing::{debug, debug_span, error_span, info, trace, Span};
-use crate::FlowError;
+use tracing::{debug, error_span, info};
 
 /// Executes flow
 #[derive(Debug)]
@@ -144,9 +138,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
     /// Executes this flow
     pub fn execute(&mut self) -> Result<(), FlowBackendError> {
         let result = error_span!("execute").in_scope(|| {
-            self.listeners.iter().for_each(|i| {
-                i.lock().started()
-            });
+            self.listeners.iter().for_each(|i| i.lock().started());
             debug!(
                 "Calculating task ordering for {} tasks...",
                 self.tasks.len()
@@ -197,7 +189,11 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                         });
                         let r = task.run();
                         listeners.iter().for_each(|i| {
-                            i.lock().task_finished(task.id(), task.nickname(), r.as_ref().map(|s| *s));
+                            i.lock().task_finished(
+                                task.id(),
+                                task.nickname(),
+                                r.as_ref().map(|s| *s),
+                            );
                         });
                         (task_id, name, r)
                     });
