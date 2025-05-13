@@ -1,9 +1,12 @@
 [package]
 name = "flow-rs"
-description = "Executes jobs in order"
-keywords = ["concurrency"]
-license = "MIT or Apache-2.0"
+authors = ["Joshua Radin <joshradin@github.com>"]
 version = "0.1.0"
+rust-version = "1.86.0"
+description = "Executes jobs in order"
+categories = ["concurrency", "development-tools"]
+keywords = ["concurrency"]
+license-file = "LICENSE"
 edition = "2024"
 readme = "README.md"
 
