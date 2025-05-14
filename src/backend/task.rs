@@ -391,7 +391,7 @@ impl Input {
         }
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(test)]
     #[allow(unused)]
     fn check_type<T: 'static>(&self) -> Result<(), TaskError> {
         if TypeId::of::<T>() != self.input_ty {

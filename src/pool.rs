@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 use std::{panic, thread};
 use tracing::{debug, error_span, instrument, trace, warn};
 
-
 /// Pool trait
 pub trait WorkerPool {
     fn max_size(&self) -> usize;
@@ -26,7 +25,7 @@ pub trait WorkerPool {
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
         f: F,
-    ) -> impl Promise<Output=T> + 'static;
+    ) -> impl Promise<Output = T> + 'static;
 }
 
 #[derive(Debug)]
@@ -40,9 +39,9 @@ struct WorkerThread {
 impl Display for WorkerThread {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerThread")
-         .field("id", &self.id)
-         .field("state", &self.state.load())
-         .finish()
+            .field("id", &self.id)
+            .field("state", &self.state.load())
+            .finish()
     }
 }
 
@@ -68,40 +67,43 @@ impl WorkerThread {
 
         let handle = {
             let state = state.clone();
-            thread::spawn(move || {
-                error_span!("worker-thread", thread=?thread::current().id()).in_scope(|| {
-                    id_tx.send(thread::current().id()).unwrap();
-                    loop {
-                        let Ok(recv) = receiver.recv() else {
-                            warn!("worker thread disconnected");
-                            break;
-                        };
-
-                        match recv {
-                            WorkerThreadCommand::Stop => {
-                                debug!("stop command received");
+            thread::Builder::new()
+                .name("worker-thread".to_string())
+                .spawn(move || {
+                    error_span!("worker-thread", thread=?thread::current().id()).in_scope(|| {
+                        id_tx.send(thread::current().id()).unwrap();
+                        loop {
+                            let Ok(recv) = receiver.recv() else {
+                                warn!("worker thread disconnected");
                                 break;
-                            }
-                            WorkerThreadCommand::Execute(runnable) => {
-                                debug!("execute command received");
-                                state.store(WorkerThreadState::Running);
-                                debug!("running runnable...");
-                                let result = catch_unwind(AssertUnwindSafe(runnable));
-                                debug!("runnable finished. result is okay={}", result.is_ok());
-                                match result {
-                                    Ok(_) => {
-                                        state.store(WorkerThreadState::Idle(Instant::now()));
-                                    }
-                                    Err(err) => {
-                                        state.store(WorkerThreadState::Panicked);
-                                        resume_unwind(err);
+                            };
+
+                            match recv {
+                                WorkerThreadCommand::Stop => {
+                                    debug!("stop command received");
+                                    break;
+                                }
+                                WorkerThreadCommand::Execute(runnable) => {
+                                    debug!("execute command received");
+                                    state.store(WorkerThreadState::Running);
+                                    debug!("running runnable...");
+                                    let result = catch_unwind(AssertUnwindSafe(runnable));
+                                    debug!("runnable finished. result is okay={}", result.is_ok());
+                                    match result {
+                                        Ok(_) => {
+                                            state.store(WorkerThreadState::Idle(Instant::now()));
+                                        }
+                                        Err(err) => {
+                                            state.store(WorkerThreadState::Panicked);
+                                            resume_unwind(err);
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
+                    })
                 })
-            })
+                .expect("failed to spawn thread")
         };
 
         Self {
@@ -147,15 +149,17 @@ struct InnerThreadPoolExecutor {
     stop_token_sender: OnceLock<Sender<()>>,
 }
 
-impl Drop for InnerThreadPoolExecutor {
-    fn drop(&mut self) {
-        if let Some(handle) = self.run_loop.take() {
-            let stop_token_sender = self.stop_token_sender.take().unwrap();
-            let _ = stop_token_sender.send(());
-            handle.join().unwrap();
-        }
-    }
-}
+// impl Drop for InnerThreadPoolExecutor {
+//     fn drop(&mut self) {
+//         if let Some(handle) = self.run_loop.take() {
+//             let stop_token_sender = self.stop_token_sender.take().unwrap();
+//             let _ = stop_token_sender.send(());
+//             if let Err(e) = handle.join() {
+//                 resume_unwind(e);
+//             }
+//         }
+//     }
+// }
 
 impl InnerThreadPoolExecutor {
     fn new(core_size: usize, max_size: usize, keep_alive_timeout: Duration) -> Self {
@@ -185,6 +189,7 @@ impl InnerThreadPoolExecutor {
         });
 
         trace!("submitting runnable...");
+        println!("submitting runnable...");
         self.queue.push_back(runnable);
 
         ThreadPoolPromise {
@@ -196,7 +201,7 @@ impl InnerThreadPoolExecutor {
     fn idle(&self) -> usize {
         self.threads
             .iter()
-            .filter(|w| matches!(w.state(), WorkerThreadState::Idle(_) ))
+            .filter(|w| matches!(w.state(), WorkerThreadState::Idle(_)))
             .count()
     }
 
@@ -229,7 +234,12 @@ impl InnerThreadPoolExecutor {
     fn running(&self) -> usize {
         self.threads
             .iter()
-            .filter(|w| matches!(w.state(), WorkerThreadState::Running| WorkerThreadState::Waiting))
+            .filter(|w| {
+                matches!(
+                    w.state(),
+                    WorkerThreadState::Running | WorkerThreadState::Waiting
+                )
+            })
             .count()
     }
 
@@ -238,12 +248,14 @@ impl InnerThreadPoolExecutor {
     }
 
     /// Steps this executor
-    #[instrument(skip_all, fields(threads=%self.threads.len(), running=%self.running(), idle=%self.idle()
-    ))]
+    #[instrument(skip_all, fields(threads=%self.threads.len(), running=%self.running(), idle=%self.idle()))]
     fn step(&mut self) {
-        self.stop_non_core_idle();
+
+        // self.stop_non_core_idle();
+
         while self.running() < self.max_size && !self.queue.is_empty() {
             let runnable = self.queue.pop_front().unwrap();
+            println!("Got runnable from queue.");
             if let Some(worker) = self.get_next_idle() {
                 worker.state.store(WorkerThreadState::Waiting);
                 worker
@@ -254,6 +266,9 @@ impl InnerThreadPoolExecutor {
             } else {
                 self.queue.push_back(runnable);
             }
+        }
+        if !self.queue.is_empty() {
+            println!("having {} tasks waiting...", self.queue.len());
         }
     }
 
@@ -272,19 +287,24 @@ impl InnerThreadPoolExecutor {
 
 /// A thread pool executor. Can be cloned freely to get extra handles to this executor.
 #[derive(Clone)]
-pub struct ThreadPool {
+pub struct FlowThreadPool {
     core_size: usize,
     max_size: usize,
     keep_alive_timeout: Duration,
     inner: Arc<Mutex<InnerThreadPoolExecutor>>,
 }
 
-impl ThreadPool {
+impl FlowThreadPool {
     /// Creates a new thread pool executor
     pub fn new(core_size: usize, max_size: usize, keep_alive_timeout: Duration) -> Self {
         let inner = InnerThreadPoolExecutor::new(core_size, max_size, keep_alive_timeout);
         let inner = Arc::new(Mutex::new(inner));
-        let mut executor = Self { core_size, max_size, keep_alive_timeout, inner };
+        let mut executor = Self {
+            core_size,
+            max_size,
+            keep_alive_timeout,
+            inner,
+        };
         Self::start(&mut executor);
         executor
     }
@@ -292,38 +312,54 @@ impl ThreadPool {
     fn start(this: &mut Self) {
         let inner = this.inner.clone();
         trace!(core=this.core_size, max=this.max_size, keep_alive=%this.keep_alive_timeout.as_secs_f32() ,"starting thread pool");
-        let (sender, receiver) = bounded::<()>(0);
+        let (sender, receiver) = bounded::<()>(1);
         let handle = {
             let inner = inner.clone();
-            thread::spawn(move || {
-                loop {
-                    match receiver.try_recv() {
-                        Ok(()) => {
-                            break;
+            thread::Builder::new()
+                .name("thread-pool".to_string())
+                .spawn(move || {
+                    loop {
+                        match receiver.try_recv() {
+                            Ok(()) => {
+                                trace!("got stop...");
+                                break;
+                            }
+                            Err(TryRecvError::Disconnected) => {
+                                trace!("disconnected...");
+                                break;
+                            }
+                            _ => {}
                         }
-                        Err(TryRecvError::Disconnected) => {
-                            break;
-                        }
-                        _ => {}
+                        let mut locked = inner.lock();
+                        locked.step();
+                        drop(locked);
+                        thread::yield_now();
                     }
-                    let mut locked = inner.lock();
-                    locked.step();
-                }
-            })
+                    trace!("thread pool stopped");
+                })
+                .expect("failed to spawn thread pool")
         };
         let lock = inner.lock();
         lock.run_loop.set(handle).unwrap();
         lock.stop_token_sender.set(sender).unwrap()
     }
-}
 
-impl Default for ThreadPool {
-    fn default() -> Self {
-        Self::new(0, num_cpus::get(), Duration::from_millis(1000))
+    /// stops the thread pool
+    fn stop(this: &mut Self) {
+        let inner = this.inner.lock();
+        if let Some(stop) = inner.stop_token_sender.get() {
+            let _ = stop.try_send(());
+        }
     }
 }
 
-impl Debug for ThreadPool {
+impl Default for FlowThreadPool {
+    fn default() -> Self {
+        Self::new(num_cpus::get(), num_cpus::get(), Duration::ZERO)
+    }
+}
+
+impl Debug for FlowThreadPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ThreadPool")
             .field("core", &self.core_size)
@@ -333,7 +369,13 @@ impl Debug for ThreadPool {
     }
 }
 
-impl WorkerPool for ThreadPool {
+impl Drop for FlowThreadPool {
+    fn drop(&mut self) {
+        Self::stop(self);
+    }
+}
+
+impl WorkerPool for FlowThreadPool {
     fn max_size(&self) -> usize {
         self.inner.lock().max_size
     }
@@ -345,9 +387,11 @@ impl WorkerPool for ThreadPool {
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
         f: F,
-    ) -> impl Promise<Output=T> + 'static {
-        let mut inner = self.inner.lock();
-        inner.submit_callable(f)
+    ) -> impl Promise<Output = T> + 'static {
+        let mut inner = self.inner.try_lock().expect("failed to gain access to inner");
+        let promise = inner.submit_callable(f);
+        println!("promise submitted");
+        promise
     }
 }
 
@@ -382,7 +426,7 @@ mod tests {
 
     #[test]
     fn test_thread_pool_executor() {
-        let pool = ThreadPool::default();
+        let pool = FlowThreadPool::default();
         let barrier = Arc::new(Barrier::new(2));
         let mut promises = vec![];
         for _ in 0..2 {
@@ -399,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_thread_pool_more_than_core_count() {
-        let pool = ThreadPool::new(4, 4, Duration::ZERO);
+        let pool = FlowThreadPool::new(4, 4, Duration::ZERO);
         let count = Arc::new(AtomicUsize::new(0));
         let mut promises = vec![];
 
@@ -420,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_thread_pool_return_value() {
-        let pool = ThreadPool::default();
+        let pool = FlowThreadPool::default();
         let result: Result<_, Infallible> = pool.submit(|| Ok(42)).get();
         assert_eq!(result.unwrap(), 42);
     }

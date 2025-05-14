@@ -5,9 +5,9 @@ use crate::backend::task::{
     BackendTask, SingleOutput, TaskError, TaskId, TypedOutput,
 };
 use crate::listener::FlowListener;
-use crate::pool::ThreadPool;
+use crate::pool::FlowThreadPool;
 use crate::promise::{IntoPromise, PromiseExt};
-use crate::task_ordering::{format_cycle, TaskOrderingError};
+use crate::task_ordering::{format_cycle, FlowGraph, TaskOrderingError};
 use crate::task_ordering::{DefaultTaskOrderer, SteppedTaskOrderer, TaskOrderer};
 use fortuples::fortuples;
 use parking_lot::{Mutex, RwLock};
@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::time::Duration;
 use thiserror::Error;
 
 type StrongFlowBackend<T = DefaultTaskOrderer> = Rc<RwLock<FlowBackend<T>>>;
@@ -24,7 +23,7 @@ type WeakFlowBackend<T = DefaultTaskOrderer> = Weak<RwLock<FlowBackend<T>>>;
 
 /// Builds a [`Flow`]
 pub struct FlowBuilder<I, O, T = DefaultTaskOrderer> {
-    pool: Option<ThreadPool>,
+    pool: Option<FlowThreadPool>,
     orderer: Option<T>,
     _marker: PhantomData<(I, O)>,
 }
@@ -55,8 +54,9 @@ impl<I, O, T> FlowBuilder<I, O, T> {
         }
     }
 
-    pub fn with_thread_pool(mut self, core: usize, max: usize, keep_alive: Duration) -> Self {
-        self.pool = Some(ThreadPool::new(core, max, keep_alive));
+    /// Sets the flow thread pool
+    pub fn with_thread_pool(mut self, pool: FlowThreadPool) -> Self {
+        self.pool = Some(pool);
         self
     }
 }
@@ -95,9 +95,14 @@ impl<I: Send, O: Send> Default for Flow<I, O> {
 }
 
 impl<I: Send, O: Send> Flow<I, O> {
+    /// Creates a flow builder
+    pub fn builder() -> FlowBuilder<I, O> {
+        FlowBuilder::new()
+    }
+
     /// Creates a new flow
     pub fn new() -> Self {
-        let pool: ThreadPool = Default::default();
+        let pool: FlowThreadPool = Default::default();
         Self {
             _marker: PhantomData,
             nicknames: Default::default(),
@@ -111,6 +116,7 @@ impl<I: Send, O: Send> Flow<I, O> {
 }
 
 impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I, O, T> {
+
     /// Gets a representation of the input of a flow
     pub fn input(&self) -> FlowInput<I, T> {
         FlowInput::new(&self.backend)
@@ -128,6 +134,18 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
             .get_mut(t)
             .ok_or_else(|| FlowError::TaskNotFound(t))?;
         t.input_mut().depends_on(u);
+        Ok(())
+    }
+
+    /// Sets a depends on relationship
+    pub fn depends_on_all<It: IntoIterator<Item=TaskId>>(&mut self, t: TaskId, iter: It) -> Result<(), FlowError> {
+        let mut locked = self.backend.write();
+        let t = locked
+            .get_mut(t)
+            .ok_or_else(|| FlowError::TaskNotFound(t))?;
+        for u in iter {
+            t.input_mut().depends_on(u);
+        }
         Ok(())
     }
 
@@ -150,6 +168,12 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
         s
     }
 
+    /// Creates a flow graph at the given moment for this [`Flow`]
+    pub fn flow_graph(&self) -> Result<impl FlowGraph, FlowError> {
+        let (_to, fg) = self.backend.read().ordering()?;
+        Ok(fg)
+    }
+
     /// Attempts to find a task with the given name
     pub fn find(&self, name: impl AsRef<str>) -> Option<TaskId> {
         self.nicknames.get(name.as_ref()).copied()
@@ -167,8 +191,8 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
         let mut backend = self.backend.write();
         let listeners = Arc::new(Mutex::new(self.listeners));
         let shim = FlowListenerShim::new(&listeners);
-        backend.add_listener(shim);
-        backend.input_mut().send(Box::new(i))?;
+        dbg!(backend.add_listener(shim));
+        dbg!(backend.input_mut().send(Box::new(i))?);
         let result = backend.execute().map_err(|e| match e {
             FlowBackendError::TaskOrdering(TaskOrderingError::CyclicTasks { cycle }) => {
                 let cycled = cycle
@@ -182,7 +206,7 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
             }
             other => FlowError::from(other),
         });
-
+        dbg!(&result);
         listeners.lock()
             .iter_mut()
             .for_each(|l| {

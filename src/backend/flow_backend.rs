@@ -2,7 +2,7 @@
 
 use crate::backend::recv_promise::RecvPromise;
 use crate::backend::task::{BackendTask, Data, Output, TaskError, TaskId};
-use crate::pool::{ThreadPool, WorkerPool};
+use crate::pool::{FlowThreadPool, WorkerPool};
 use crate::promise::{BoxPromise, IntoPromise, PollPromise, PromiseSet};
 use crate::task_ordering::{DefaultTaskOrderer, FlowGraph};
 use crate::task_ordering::{TaskOrderer, TaskOrdering, TaskOrderingError};
@@ -15,11 +15,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use static_assertions::assert_impl_all;
 use thiserror::Error;
-use tracing::{debug, error_span, info};
+use tracing::{debug, error_span};
 
 /// Executes flow
 #[derive(Debug)]
-pub struct FlowBackend<T: TaskOrderer = DefaultTaskOrderer, P: WorkerPool = ThreadPool> {
+pub struct FlowBackend<T: TaskOrderer = DefaultTaskOrderer, P: WorkerPool = FlowThreadPool> {
     worker_pool: P,
     orderer: T,
     listeners: Vec<Mutex<Box<dyn FlowBackendListener>>>,
@@ -28,12 +28,13 @@ pub struct FlowBackend<T: TaskOrderer = DefaultTaskOrderer, P: WorkerPool = Thre
     output: FlowBackendOutput,
 }
 
+
 assert_impl_all!(FlowBackend: Send);
 
 impl FlowBackend {
     /// Creates a new flow backend
     pub fn new() -> Self {
-        Self::with_worker_pool(ThreadPool::default())
+        Self::with_worker_pool(FlowThreadPool::default())
     }
 }
 
@@ -130,7 +131,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
     }
 
     /// calculates the task ordering for this flow backend
-    fn ordering(&self) -> Result<(T::TaskOrdering, BackendFlowGraph), FlowBackendError> {
+    pub fn ordering(&self) -> Result<(T::TaskOrdering, BackendFlowGraph), FlowBackendError> {
         let flow_graph = BackendFlowGraph::new(self.tasks.values());
         let ordering = self
             .orderer
@@ -157,6 +158,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
             let mut step: usize = 1;
             let mut open_tasks = BinaryHeap::<Weighted<TaskId>>::new();
 
+            println!("starting task execution");
             while !ordering.empty() {
                 let newly_ready = ordering.poll()?;
                 let new_adds = !newly_ready.is_empty();
@@ -182,11 +184,12 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                 };
 
                 for task_id in batch {
+                    println!("sending  task {}", task_id);
                     let mut task = self.tasks.remove(&task_id).expect("Task not found");
                     let name = task.nickname().to_string();
                     let listeners = listeners.clone();
                     let promise = self.worker_pool.submit(move || {
-                        info!("Task {:?} started", task.nickname());
+                        debug!("Task {:?} started", task.nickname());
                         listeners.iter().for_each(|i| {
                             i.lock().task_started(task.id(), task.nickname());
                         });
@@ -200,6 +203,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                         });
                         (task_id, name, r)
                     });
+                    println!("task {task_id} submitted");
                     promises.insert(promise);
                 }
                 let mut any_finished = false;
@@ -209,7 +213,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                             break;
                         }
                         Some(PollPromise::Ready((done, name, result))) => {
-                            info!("Task {:?} finished: {:?}", name, result);
+                            debug!("Task {:?} finished: {:?}", name, result);
                             if let Err(e) = result {
                                 return Err(FlowBackendError::TaskError {
                                     id: done,
