@@ -1,0 +1,33 @@
+[package]
+name = "flow-rs"
+authors = ["Joshua Radin <joshradin@github.com>"]
+version = "0.1.0"
+rust-version = "1.86.0"
+description = "Executes jobs in order"
+repository = "https://github.com/joshradin/flow-rs"
+categories = ["concurrency", "development-tools"]
+keywords = ["concurrency"]
+license-file = "LICENSE"
+edition = "2024"
+readme = "README.md"
+
+[dependencies]
+parking_lot = "0.12.3"
+num_cpus = "1.16.0"
+tracing = "0.1.41"
+crossbeam = "0.8.4"
+thiserror = "2.0.12"
+petgraph = "0.8.1"
+static_assertions = "1.1.0"
+fortuples = "0.9.1"
+
+[dev-dependencies]
+parking_lot = { version = "0.12.3", features = ["deadlock_detection"] }
+test-log = { version = "0.2.17", features = ["trace"] }
+criterion = "0.5.1"
+tracing-subscriber = "0.3.19"
+indicatif = "0.17.11"
+
+[[bench]]
+name = "benchmarks"
+harness = false
