@@ -1,4 +1,4 @@
-use flow_rs::{FlowBuilder, FlowError};
+use jobflow::{FlowBuilder, FlowError};
 use test_log::test;
 
 // #[path = "gradle_like.rs"]

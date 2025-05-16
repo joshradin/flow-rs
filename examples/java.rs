@@ -1,10 +1,10 @@
-use flow_rs::listener::FlowListener;
-use flow_rs::{Flow, FlowError, JobError, JobId};
+use jobflow::listener::FlowListener;
+use jobflow::{Flow, FlowError, JobError, JobId};
 use indicatif::style::ProgressTracker;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use flow_rs::job_ordering::GraphTraversalTaskOrderer;
+use jobflow::job_ordering::GraphTraversalTaskOrderer;
 
 #[path = "../tests/gradle_like.rs"]
 mod gradle_like;

@@ -1,10 +1,10 @@
-# `flow-rs` Design and Implementation
+# `jobflow` Design and Implementation
 
-This document will reflect the design and implementation details for `flow-rs`
+This document will reflect the design and implementation details for `jobflow`
 
 ## Design
 
-This is the general design for `flow-rs`
+This is the general design for `jobflow`
 
 ### Basic Ideas
 ```psuedocode

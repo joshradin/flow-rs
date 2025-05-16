@@ -1,5 +1,5 @@
-use flow_rs::{FlowBuilder, FlowError};
-use flow_rs::job_ordering::SteppedTaskOrderer;
+use jobflow::{FlowBuilder, FlowError};
+use jobflow::job_ordering::SteppedTaskOrderer;
 use test_log::test;
 
 mod gradle_like;

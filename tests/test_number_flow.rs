@@ -1,6 +1,6 @@
-use flow_rs::action::action;
-use flow_rs::job_ordering::{GraphTraversalTaskOrderer, JobOrderer};
-use flow_rs::*;
+use jobflow::action::action;
+use jobflow::job_ordering::{GraphTraversalTaskOrderer, JobOrderer};
+use jobflow::*;
 use test_log::test;
 use tracing::info;
 

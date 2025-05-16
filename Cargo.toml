@@ -1,10 +1,10 @@
 [package]
-name = "flow-rs"
+name = "jobflow"
 authors = ["Joshua Radin <joshradin@github.com>"]
 version = "0.1.0"
 rust-version = "1.86.0"
 description = "Executes jobs in order"
-repository = "https://github.com/joshradin/flow-rs"
+repository = "https://github.com/joshradin/jobflow"
 categories = ["concurrency", "development-tools"]
 keywords = ["concurrency"]
 license-file = "LICENSE"

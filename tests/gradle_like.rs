@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
-use flow_rs::job_ordering::JobOrderer;
-use flow_rs::{DependsOn, Flow, FlowError, JobId, JobRef};
+use jobflow::job_ordering::JobOrderer;
+use jobflow::{DependsOn, Flow, FlowError, JobId, JobRef};
 
 static PROJECTS: &[&str] = &[
     "base",

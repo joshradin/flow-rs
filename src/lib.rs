@@ -1,4 +1,4 @@
-//! # `flow-rs`
+//! # `jobflow`
 //!
 //! Do concurrent tasks safely and easily.
 

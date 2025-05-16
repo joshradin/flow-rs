@@ -1,7 +1,6 @@
 use crate::pool::settings::ThreadPoolSettings;
 use crossbeam::atomic::AtomicCell;
 use parking_lot::{Mutex, RwLock};
-use petgraph::visit::NodeRef;
 use static_assertions::assert_impl_all;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
@@ -13,7 +12,7 @@ use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{io, thread};
-use tracing::{error_span, info, trace, Span};
+use tracing::{error_span, trace, Span};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct WorkerThreadId(NonZero<usize>);
@@ -29,7 +28,6 @@ impl Display for WorkerThreadId {
         Display::fmt(&self.0.get(), f)
     }
 }
-
 
 impl WorkerThreadId {
     fn new(id: usize) -> Self {
@@ -48,7 +46,6 @@ impl Debug for ThreadPoolTask {
 assert_impl_all!(ThreadPoolTask: Send);
 
 type Stealer = crossbeam::deque::Stealer<ThreadPoolTask>;
-type Steal = crossbeam::deque::Steal<ThreadPoolTask>;
 type Injector = crossbeam::deque::Injector<ThreadPoolTask>;
 type Worker = crossbeam::deque::Worker<ThreadPoolTask>;
 
@@ -74,7 +71,7 @@ pub struct InnerThreadPool {
 
 impl Drop for InnerThreadPool {
     fn drop(&mut self) {
-        let mut locked = self.handles.lock();
+        let locked = self.handles.lock();
         locked.iter().for_each(|handle| {
             let _ = handle.cont.compare_exchange(true, false, AcqRel, Relaxed);
         })
@@ -112,20 +109,17 @@ impl InnerThreadPool {
         loop {
             if worker_count < self.settings.max_size() {
                 if task_count > worker_count {
-                    match self.active_workers.compare_exchange(
+                    if self.active_workers.compare_exchange(
                         worker_count,
                         worker_count + 1,
                         AcqRel,
                         Relaxed,
-                    ) {
-                        Ok(_) => {
-                            let worker = self.spawn_worker()?;
-                            trace!("spawned worker {:?}", worker.id);
-                            let mut lock = self.handles.lock();
-                            lock.push(worker);
-                            break;
-                        }
-                        Err(_) => {}
+                    ).is_ok() {
+                        let worker = self.spawn_worker()?;
+                        trace!("spawned worker {:?}", worker.id);
+                        let mut lock = self.handles.lock();
+                        lock.push(worker);
+                        break;
                     }
                 } else {
                     break;
@@ -151,33 +145,29 @@ impl InnerThreadPool {
 
     /// maybe stop a thread, returning true if it stopped
     fn maybe_stop(self: &Arc<Self>, id: WorkerThreadId) -> thread::Result<bool> {
-        let outcome = loop {
+        loop {
             // trace!("checking if {id:?} should be stopped");
             let current_workers = self.active_workers.load(Relaxed);
             if self.should_stop() {
-                match self.active_workers.compare_exchange(
+                if self.active_workers.compare_exchange(
                     current_workers,
                     current_workers - 1,
                     AcqRel,
                     Relaxed,
-                ) {
-                    Ok(_) => {
-                        let mut workers = self.handles.lock();
-                        let index = workers.iter().position(|p| p.id == id);
-                        if let Some(index) = index {
-                            let remove = workers.swap_remove(index);
-                            let _ = remove.cont.compare_exchange(true, false, AcqRel, Relaxed);
-                            trace!("{id:?} is being stopped");
-                        }
-                        break Ok(true);
+                ).is_ok() {
+                    let mut workers = self.handles.lock();
+                    let index = workers.iter().position(|p| p.id == id);
+                    if let Some(index) = index {
+                        let remove = workers.swap_remove(index);
+                        let _ = remove.cont.compare_exchange(true, false, AcqRel, Relaxed);
+                        trace!("{id:?} is being stopped");
                     }
-                    Err(_) => {}
+                    break Ok(true);
                 }
             } else {
                 break Ok(false);
             }
-        };
-        outcome
+        }
     }
 
     /// Submit a runnable
@@ -234,8 +224,8 @@ impl WorkerThread {
 
         Ok(WorkerThreadHandle {
             id,
-            join_handle,
-            state,
+            _join_handle: join_handle,
+            _state: state,
             cont,
         })
     }
@@ -334,7 +324,7 @@ impl WorkerThread {
                 };
 
                 trace!("worker {:?} has finished", self.id);
-                if !r.is_err() {
+                if r.is_ok() {
                     self.state.store(WorkerThreadState::Finished)
                 }
                 if let Some(thread_pool) = self.parent.upgrade() {
@@ -352,11 +342,10 @@ impl WorkerThread {
 /// A handle to a worker thread
 struct WorkerThreadHandle {
     id: WorkerThreadId,
-    join_handle: JoinHandle<()>,
-    state: Arc<AtomicCell<WorkerThreadState>>,
+    _join_handle: JoinHandle<()>,
+    _state: Arc<AtomicCell<WorkerThreadState>>,
     cont: Arc<AtomicBool>,
 }
-
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WorkerThreadState {
@@ -395,7 +384,8 @@ impl WorkerThreadRegistry {
     fn get_stealers(&self, this_id: &WorkerThreadId) -> Vec<Stealer> {
         self.stealer_map
             .iter()
-            .filter_map(|(id, stealer)| (id != this_id).then(|| stealer.clone()))
+            .filter(|(id, _stealer)| *id != this_id)
+            .map(|(_id, stealer)| stealer.clone())
             .collect()
     }
 }

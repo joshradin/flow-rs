@@ -1,6 +1,6 @@
-# `flow-rs`
+# `jobflow`
 
-Do ordered tasks concurrently and easily.
+Do ordered jobs concurrently and easily.
 
 
 

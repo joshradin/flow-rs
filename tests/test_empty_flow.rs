@@ -1,5 +1,5 @@
 
-use flow_rs::Flow;
+use jobflow::Flow;
 
 #[test]
 fn empty_flow() {

@@ -1,17 +1,15 @@
-//! The worker pool used by flow-rs.
+//! The worker pool used by jobflow.
 //!
 //!
 
-use crate::pool::settings::ThreadPoolSettings;
-use crate::promise::{promise_fn, PollPromise, Promise};
-use std::any::Any;
-use std::fmt::{Debug, Display};
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
-use crossbeam::channel::{bounded, TrySendError};
-use static_assertions::assert_impl_all;
 use crate::backend::recv_promise::RecvPromise;
 use crate::pool::inner_thread_pool::InnerThreadPool;
+use crate::pool::settings::ThreadPoolSettings;
+use crate::promise::{PollPromise, Promise};
+use crossbeam::channel::bounded;
+use static_assertions::assert_impl_all;
+use std::sync::Arc;
+use std::time::Duration;
 
 mod settings;
 mod inner_thread_pool;
