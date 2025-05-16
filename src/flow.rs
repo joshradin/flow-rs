@@ -191,8 +191,8 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
         let mut backend = self.backend.write();
         let listeners = Arc::new(Mutex::new(self.listeners));
         let shim = FlowListenerShim::new(&listeners);
-        dbg!(backend.add_listener(shim));
-        dbg!(backend.input_mut().send(Box::new(i))?);
+        backend.add_listener(shim);
+        backend.input_mut().send(Box::new(i))?;
         let result = backend.execute().map_err(|e| match e {
             FlowBackendError::TaskOrdering(TaskOrderingError::CyclicTasks { cycle }) => {
                 let cycled = cycle
@@ -206,7 +206,6 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: TaskOrderer> Flow<I,
             }
             other => FlowError::from(other),
         });
-        dbg!(&result);
         listeners.lock()
             .iter_mut()
             .for_each(|l| {

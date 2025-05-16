@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use static_assertions::assert_impl_all;
 use thiserror::Error;
-use tracing::{debug, error_span};
+use tracing::{debug, error_span, trace};
 
 /// Executes flow
 #[derive(Debug)]
@@ -158,7 +158,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
             let mut step: usize = 1;
             let mut open_tasks = BinaryHeap::<Weighted<TaskId>>::new();
 
-            println!("starting task execution");
+            trace!("starting task execution");
             while !ordering.empty() {
                 let newly_ready = ordering.poll()?;
                 let new_adds = !newly_ready.is_empty();
@@ -184,7 +184,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                 };
 
                 for task_id in batch {
-                    println!("sending  task {}", task_id);
+                    trace!("sending  task {}", task_id);
                     let mut task = self.tasks.remove(&task_id).expect("Task not found");
                     let name = task.nickname().to_string();
                     let listeners = listeners.clone();
@@ -203,7 +203,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
                         });
                         (task_id, name, r)
                     });
-                    println!("task {task_id} submitted");
+                    trace!("task {task_id} submitted");
                     promises.insert(promise);
                 }
                 let mut any_finished = false;

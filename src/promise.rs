@@ -255,6 +255,35 @@ impl<'lf, T: Send + 'lf, P: Promise<Output = T> + 'lf> FromIterator<P> for Promi
     }
 }
 
+pub struct PromiseFn<T, F>
+where
+    F: FnOnce() -> T
+{
+    f: Option<F>,
+}
+
+impl<T, F> Promise for PromiseFn<T, F>
+where
+    F: FnOnce() -> T + Send,
+    T: Send
+{
+    type Output = T;
+
+    fn poll(&mut self) -> PollPromise<Self::Output> {
+        let f = self.f.take().unwrap_or_else(|| panic!("Promise must not be polled after returning data"));
+        PollPromise::Ready(f())
+    }
+}
+
+/// Creates a promise fn
+pub fn promise_fn<T, F>(f: F) -> PromiseFn<T, F>
+where
+    F: FnOnce() -> T + Send,
+    T: Send
+{
+    PromiseFn { f: Some(f) }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::promise::{BoxPromise, Just};
