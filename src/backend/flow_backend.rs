@@ -1,11 +1,11 @@
 //! Actual flow backend
 
 use crate::backend::recv_promise::RecvPromise;
-use crate::backend::task::{BackendTask, Data, Output, TaskError, TaskId};
+use crate::backend::job::{BackendJob, Data, Output, JobError, JobId};
 use crate::pool::{FlowThreadPool, WorkerPool};
 use crate::promise::{BoxPromise, IntoPromise, PollPromise, PromiseSet};
-use crate::task_ordering::{DefaultTaskOrderer, FlowGraph};
-use crate::task_ordering::{TaskOrderer, TaskOrdering, TaskOrderingError};
+use crate::job_ordering::{DefaultTaskOrderer, FlowGraph};
+use crate::job_ordering::{JobOrderer, JobOrdering, JobOrderingError};
 use crossbeam::channel::{bounded, Receiver, SendError, Sender, TryRecvError};
 use parking_lot::Mutex;
 use std::cmp::{Ordering};
@@ -19,11 +19,11 @@ use tracing::{debug, error_span, trace};
 
 /// Executes flow
 #[derive(Debug)]
-pub struct FlowBackend<T: TaskOrderer = DefaultTaskOrderer, P: WorkerPool = FlowThreadPool> {
+pub struct FlowBackend<T: JobOrderer = DefaultTaskOrderer, P: WorkerPool = FlowThreadPool> {
     worker_pool: P,
     orderer: T,
     listeners: Vec<Mutex<Box<dyn FlowBackendListener>>>,
-    tasks: HashMap<TaskId, BackendTask>,
+    tasks: HashMap<JobId, BackendJob>,
     input: FlowBackendInput,
     output: FlowBackendOutput,
 }
@@ -45,7 +45,7 @@ impl<P: WorkerPool> FlowBackend<DefaultTaskOrderer, P> {
     }
 }
 
-impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
+impl<T: JobOrderer, P: WorkerPool> FlowBackend<T, P> {
     /// Creates the new flow backend with the given worker pool
     pub fn with_task_orderer_and_worker_pool(task_orderer: T, worker_pool: P) -> Self {
         Self {
@@ -59,26 +59,26 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
     }
 
     /// Add a task to this flow backend
-    pub fn add(&mut self, task: BackendTask) {
+    pub fn add(&mut self, task: BackendJob) {
         self.tasks.insert(task.id(), task);
     }
 
     /// Gets the task by id
-    pub fn get(&self, task_id: TaskId) -> Option<&BackendTask> {
+    pub fn get(&self, task_id: JobId) -> Option<&BackendJob> {
         self.tasks.get(&task_id)
     }
 
     /// Gets a mutable reference to a task by id
-    pub fn get_mut(&mut self, task_id: TaskId) -> Option<&mut BackendTask> {
+    pub fn get_mut(&mut self, task_id: JobId) -> Option<&mut BackendJob> {
         self.tasks.get_mut(&task_id)
     }
 
     /// Gets two mutable reference to tasks by id, if the ids are disjoint
     pub fn get_mut2(
         &mut self,
-        task_id_1: TaskId,
-        task_id_2: TaskId,
-    ) -> Option<(&mut BackendTask, &mut BackendTask)> {
+        task_id_1: JobId,
+        task_id_2: JobId,
+    ) -> Option<(&mut BackendJob, &mut BackendJob)> {
         let [a, b] = self.tasks.get_disjoint_mut([&task_id_1, &task_id_2]);
         a.zip(b)
     }
@@ -86,11 +86,11 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
     /// Gets `N` mutable reference to tasks by id, if the ids are disjoint
     pub fn get_mut_disjoint<const N: usize>(
         &mut self,
-        task_ids: [TaskId; N],
-    ) -> Option<[&mut BackendTask; N]> {
+        task_ids: [JobId; N],
+    ) -> Option<[&mut BackendJob; N]> {
         let references = task_ids.each_ref();
         let tasks = self.tasks.get_disjoint_mut(references);
-        let mut ret: Vec<&mut BackendTask> = vec![];
+        let mut ret: Vec<&mut BackendJob> = vec![];
 
         for task in tasks {
             match task {
@@ -103,14 +103,14 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
             }
         }
 
-        <[&mut BackendTask; N]>::try_from(ret).ok()
+        <[&mut BackendJob; N]>::try_from(ret).ok()
     }
 
     /// Gets the given task id and the flow input
     pub fn get_mut_and_input(
         &mut self,
-        task_id: TaskId,
-    ) -> (Option<&mut BackendTask>, &mut FlowBackendInput) {
+        task_id: JobId,
+    ) -> (Option<&mut BackendJob>, &mut FlowBackendInput) {
         let Self { tasks, input, .. } = self;
 
         (tasks.get_mut(&task_id), input)
@@ -118,8 +118,8 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
     /// Gets the given task id and the flow output
     pub fn get_mut_and_output(
         &mut self,
-        task_id: TaskId,
-    ) -> (Option<&mut BackendTask>, &mut FlowBackendOutput) {
+        task_id: JobId,
+    ) -> (Option<&mut BackendJob>, &mut FlowBackendOutput) {
         let Self { tasks, output, .. } = self;
 
         (tasks.get_mut(&task_id), output)
@@ -131,7 +131,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
     }
 
     /// calculates the task ordering for this flow backend
-    pub fn ordering(&self) -> Result<(T::TaskOrdering, BackendFlowGraph), FlowBackendError> {
+    pub fn ordering(&self) -> Result<(T::JobOrdering, BackendFlowGraph), FlowBackendError> {
         let flow_graph = BackendFlowGraph::new(self.tasks.values());
         let ordering = self
             .orderer
@@ -156,7 +156,7 @@ impl<T: TaskOrderer, P: WorkerPool> FlowBackend<T, P> {
             let mut promises = PromiseSet::new();
 
             let mut step: usize = 1;
-            let mut open_tasks = BinaryHeap::<Weighted<TaskId>>::new();
+            let mut open_tasks = BinaryHeap::<Weighted<JobId>>::new();
 
             trace!("starting task execution");
             while !ordering.empty() {
@@ -367,12 +367,12 @@ impl<T> Ord for Weighted<T> {
 #[derive(Debug, Error)]
 pub enum FlowBackendError {
     #[error(transparent)]
-    TaskOrdering(#[from] TaskOrderingError),
+    TaskOrdering(#[from] JobOrderingError),
     #[error("{nickname}: {error}")]
     TaskError {
-        id: TaskId,
+        id: JobId,
         nickname: String,
-        error: TaskError,
+        error: JobError,
     },
     #[error("Only one task can use the flow input")]
     FlowInputTaskAlreadySet,
@@ -388,9 +388,9 @@ pub enum FlowBackendError {
 pub trait FlowBackendListener: Sync + Send {
     fn started(&mut self);
     /// Run when a task is started
-    fn task_started(&mut self, id: TaskId, nickname: &str);
+    fn task_started(&mut self, id: JobId, nickname: &str);
     /// Run when a task finished
-    fn task_finished(&mut self, id: TaskId, nickname: &str, result: Result<(), &TaskError>);
+    fn task_finished(&mut self, id: JobId, nickname: &str, result: Result<(), &JobError>);
     /// Ran once the entire flow is done
     fn finished(&mut self, result: Result<(), &FlowBackendError>);
 }
@@ -403,13 +403,13 @@ impl Debug for dyn FlowBackendListener {
 
 #[derive(Clone)]
 pub struct BackendFlowGraph {
-    tasks: HashSet<TaskId>,
-    dependencies: HashMap<TaskId, HashSet<TaskId>>,
-    dependents: HashMap<TaskId, HashSet<TaskId>>,
+    tasks: HashSet<JobId>,
+    dependencies: HashMap<JobId, HashSet<JobId>>,
+    dependents: HashMap<JobId, HashSet<JobId>>,
 }
 
 impl BackendFlowGraph {
-    pub fn new<'a, I: IntoIterator<Item = &'a BackendTask>>(b_tasks: I) -> Self {
+    pub fn new<'a, I: IntoIterator<Item = &'a BackendJob>>(b_tasks: I) -> Self {
         let mut tasks = HashSet::new();
         let mut dependencies = HashMap::new();
         let mut dependents: HashMap<_, HashSet<_>> = HashMap::new();
@@ -431,19 +431,19 @@ impl BackendFlowGraph {
 }
 
 impl FlowGraph for BackendFlowGraph {
-    type Tasks = HashSet<TaskId>;
-    type DependsOn = HashSet<TaskId>;
-    type Dependents = HashSet<TaskId>;
+    type Jobs = HashSet<JobId>;
+    type DependsOn = HashSet<JobId>;
+    type Dependents = HashSet<JobId>;
 
-    fn tasks(&self) -> Self::Tasks {
+    fn jobs(&self) -> Self::Jobs {
         self.tasks.clone()
     }
 
-    fn dependencies(&self, task: &TaskId) -> Self::DependsOn {
+    fn dependencies(&self, task: &JobId) -> Self::DependsOn {
         self.dependencies.get(task).cloned().unwrap_or_default()
     }
 
-    fn dependents(&self, task: &TaskId) -> Self::DependsOn {
+    fn dependents(&self, task: &JobId) -> Self::DependsOn {
         self.dependents.get(task).cloned().unwrap_or_default()
     }
 }
@@ -452,8 +452,8 @@ impl FlowGraph for BackendFlowGraph {
 mod tests {
     use super::*;
     use crate::action::action;
-    use crate::backend::task::test_fixtures::MockTaskInput;
-    use crate::backend::task::{InputFlavor, ReusableOutput, SingleOutput};
+    use crate::backend::job::test_fixtures::MockTaskInput;
+    use crate::backend::job::{InputFlavor, ReusableOutput, SingleOutput};
     use test_log::test;
 
     #[test]
@@ -478,13 +478,13 @@ mod tests {
 
     fn create_backend() -> FlowBackend {
         let mut backend = FlowBackend::default();
-        let mut task1 = BackendTask::new(
+        let mut task1 = BackendJob::new(
             "task1",
             InputFlavor::Single,
             ReusableOutput::new(),
             action(|i: i32| i * i),
         );
-        let mut task2 = BackendTask::new(
+        let mut task2 = BackendJob::new(
             "task2",
             InputFlavor::Single,
             SingleOutput::new(),
@@ -493,7 +493,7 @@ mod tests {
                 i.to_string()
             }),
         );
-        let mut task3 = BackendTask::new(
+        let mut task3 = BackendJob::new(
             "task3",
             InputFlavor::Single,
             SingleOutput::new(),

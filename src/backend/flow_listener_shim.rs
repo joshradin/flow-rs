@@ -1,7 +1,7 @@
 use crate::backend::flow_backend::{FlowBackendError, FlowBackendListener};
-use crate::backend::task::TaskError;
+use crate::backend::job::JobError;
 use crate::listener::FlowListener;
-use crate::TaskId;
+use crate::JobId;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -29,13 +29,13 @@ impl FlowBackendListener for FlowListenerShim {
         self.flow_listeners.lock().iter_mut().for_each(|f| f.started());
     }
 
-    fn task_started(&mut self, id: TaskId, nickname: &str) {
+    fn task_started(&mut self, id: JobId, nickname: &str) {
         self.flow_listeners.lock()
             .iter_mut()
             .for_each(|f| f.task_started(id, nickname));
     }
 
-    fn task_finished(&mut self, id: TaskId, nickname: &str, result: Result<(), &TaskError>) {
+    fn task_finished(&mut self, id: JobId, nickname: &str, result: Result<(), &JobError>) {
         self.flow_listeners.lock()
             .iter_mut()
             .for_each(|f| f.task_finished(id, nickname, result));

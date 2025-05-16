@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
-use flow_rs::task_ordering::TaskOrderer;
-use flow_rs::{DependsOn, Flow, FlowError, TaskId, TaskRef};
+use flow_rs::job_ordering::JobOrderer;
+use flow_rs::{DependsOn, Flow, FlowError, JobId, JobRef};
 
 static PROJECTS: &[&str] = &[
     "base",
@@ -29,8 +29,8 @@ static PROJECT_DEPENDENCIES: &[(&str, &[&str])] = &[
 fn source_set(
     project: &str,
     set: &str,
-    flow: &mut Flow<(), (), impl TaskOrderer>,
-) -> Result<TaskId, FlowError> {
+    flow: &mut Flow<(), (), impl JobOrderer>,
+) -> Result<JobId, FlowError> {
     let compile = flow.create(format!("{project}:{set}:compile"), || {
         // thread::sleep(Duration::from_millis(1500));
     });
@@ -45,7 +45,7 @@ fn source_set(
     Ok(*jar.id())
 }
 
-fn project(name: &str, flow: &mut Flow<(), (), impl TaskOrderer>) -> Result<(), FlowError> {
+fn project(name: &str, flow: &mut Flow<(), (), impl JobOrderer>) -> Result<(), FlowError> {
     let check = flow.create(format!("{name}:check"), || {});
     let mut assemble = flow.create(format!("{name}:assemble"), || {});
     let mut build = flow.create(format!("{name}:build"), || {});
@@ -58,7 +58,7 @@ fn project(name: &str, flow: &mut Flow<(), (), impl TaskOrderer>) -> Result<(), 
     Ok(())
 }
 
-pub fn create_flow<TO: TaskOrderer>(flow: &mut Flow<(), (), TO>) -> Result<(), FlowError> {
+pub fn create_flow<TO: JobOrderer>(flow: &mut Flow<(), (), TO>) -> Result<(), FlowError> {
     for project_name in PROJECTS {
         project(project_name, flow)?;
     }

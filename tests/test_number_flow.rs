@@ -1,5 +1,5 @@
 use flow_rs::action::action;
-use flow_rs::task_ordering::{GraphTraversalTaskOrderer, TaskOrderer};
+use flow_rs::job_ordering::{GraphTraversalTaskOrderer, JobOrderer};
 use flow_rs::*;
 use test_log::test;
 use tracing::info;
@@ -48,7 +48,7 @@ fn test_graph() -> Result<(), FlowError> {
     Ok(())
 }
 
-fn populate_flow<T: TaskOrderer>(
+fn populate_flow<T: JobOrderer>(
     test_data: &Vec<i32>,
     flow: &mut Flow<Vec<i32>, Vec<i32>, T>,
 ) -> Result<(), FlowError> {

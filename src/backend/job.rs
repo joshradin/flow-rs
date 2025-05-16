@@ -6,7 +6,7 @@ use crate::backend::funnel::BackendFunnel;
 use crate::backend::recv_promise::RecvPromise;
 use crate::backend::reusable;
 use crate::backend::reusable::Reusable;
-use crate::backend::task::private::Sealed;
+use crate::backend::job::private::Sealed;
 use crate::promise::{BoxPromise, PollPromise, Promise, PromiseExt, PromiseSet};
 use crate::promise::{IntoPromise, MapPromise};
 use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
@@ -20,28 +20,28 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tracing::trace;
 
-static TASK_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
+static JOB_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// A task id
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct TaskId(NonZero<usize>);
+pub struct JobId(NonZero<usize>);
 
-impl Display for TaskId {
+impl Display for JobId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "T#{}", self.0)
     }
 }
 
-impl TaskId {
+impl JobId {
     /// Creates a new task id
     pub(crate) fn new() -> Self {
-        let id = TASK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let id = JOB_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         if id == 0 {
             panic!("task ID overflowed");
         }
         let non_zero = NonZero::new(id).expect("Should never be zero");
-        TaskId(non_zero)
+        JobId(non_zero)
     }
 }
 
@@ -49,8 +49,8 @@ impl TaskId {
 pub type Data = Box<dyn Any + Send + Sync>;
 
 /// A backend task
-pub struct BackendTask {
-    id: TaskId,
+pub struct BackendJob {
+    id: JobId,
     nickname: String,
     input: Input,
     output: Output,
@@ -60,7 +60,7 @@ pub struct BackendTask {
     action: BoxAction<'static, (), ()>,
 }
 
-impl Debug for BackendTask {
+impl Debug for BackendJob {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BackendTask")
             .field("id", &self.id)
@@ -69,19 +69,19 @@ impl Debug for BackendTask {
     }
 }
 
-impl BackendTask {
+impl BackendJob {
     pub fn new<A, I, O>(
         name: impl AsRef<str>,
         input: InputFlavor,
         output: impl AsOutputFlavor<Data = O>,
         action: A,
-    ) -> BackendTask
+    ) -> BackendJob
     where
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,
         A: Action<Input = I, Output = O> + 'static,
     {
-        let id = TaskId::new();
+        let id = JobId::new();
         let nickname = name.as_ref().to_owned();
         let (input_sender, input_receiver) = bounded::<Data>(1);
         let (output_sender, output_receiver) = bounded::<Data>(1);
@@ -128,32 +128,32 @@ impl BackendTask {
     }
 
     /// Gets the id of this task
-    pub fn id(&self) -> TaskId {
+    pub fn id(&self) -> JobId {
         self.id
     }
 
     /// Gets the dependencies for this task
-    pub fn dependencies(&self) -> &HashSet<TaskId> {
+    pub fn dependencies(&self) -> &HashSet<JobId> {
         self.input.dependencies()
     }
 
     /// Runs this task
-    pub fn run(&mut self) -> Result<(), TaskError> {
+    pub fn run(&mut self) -> Result<(), JobError> {
         if self.input.input_required() {
             match std::mem::replace(&mut self.input.kind, InputKind::None) {
-                InputKind::None => return Err(TaskError::NoInput),
+                InputKind::None => return Err(JobError::NoInput),
                 InputKind::Single(s) => {
-                    let data = s.try_get().map_err(|_| TaskError::InputNotReady)?;
+                    let data = s.try_get().map_err(|_| JobError::InputNotReady)?;
                     self.action_input_sender.send(data)?;
                 }
                 InputKind::Funnel(m) => {
                     let promise = m.into_promise();
-                    let data = promise.try_get().map_err(|_| TaskError::InputNotReady)?;
+                    let data = promise.try_get().map_err(|_| JobError::InputNotReady)?;
                     self.action_input_sender.send(Box::new(data) as Data)?;
                 }
             }
         } else if !matches!(self.input.kind, InputKind::None) {
-            return Err(TaskError::UnexpectedInput);
+            return Err(JobError::UnexpectedInput);
         }
 
         self.action.run();
@@ -175,12 +175,12 @@ impl BackendTask {
         I: FromIterator<T> + IntoIterator<Item = T, IntoIter: Send + Sync> + Send + Sync + 'static,
     >(
         &mut self,
-    ) -> Result<(), TaskError> {
+    ) -> Result<(), JobError> {
         if !matches!(self.input.flavor, InputFlavor::Single) {
-            return Err(TaskError::UnexpectedInput);
+            return Err(JobError::UnexpectedInput);
         }
         if TypeId::of::<I>() != self.input.input_ty {
-            return Err(TaskError::UnexpectedType {
+            return Err(JobError::UnexpectedType {
                 expected: self.input.input_ty_str,
                 received: type_name::<T>(),
             });
@@ -356,7 +356,7 @@ pub enum InputFlavor {
 pub trait InputSource<T> {
     type Data;
 
-    fn use_as_input_source(&mut self, other: T) -> Result<(), TaskError>;
+    fn use_as_input_source(&mut self, other: T) -> Result<(), JobError>;
 }
 
 /// Task input data
@@ -364,7 +364,7 @@ pub trait InputSource<T> {
 pub struct Input {
     input_ty: TypeId,
     input_ty_str: &'static str,
-    task_dependencies: HashSet<TaskId>,
+    task_dependencies: HashSet<JobId>,
     flavor: InputFlavor,
     kind: InputKind,
 }
@@ -393,9 +393,9 @@ impl Input {
 
     #[cfg(test)]
     #[allow(unused)]
-    fn check_type<T: 'static>(&self) -> Result<(), TaskError> {
+    fn check_type<T: 'static>(&self) -> Result<(), JobError> {
         if TypeId::of::<T>() != self.input_ty {
-            Err(TaskError::UnexpectedType {
+            Err(JobError::UnexpectedType {
                 expected: self.input_ty_str,
                 received: type_name::<T>(),
             })
@@ -405,24 +405,24 @@ impl Input {
     }
 
     /// Gets the list of task id dependencies for this task
-    pub fn dependencies(&self) -> &HashSet<TaskId> {
+    pub fn dependencies(&self) -> &HashSet<JobId> {
         &self.task_dependencies
     }
 
     /// Sets an explicit task ordering
-    pub fn depends_on(&mut self, task_id: TaskId) {
+    pub fn depends_on(&mut self, task_id: JobId) {
         self.task_dependencies.insert(task_id);
     }
 
     /// Sets an explicit task ordering
     #[inline]
-    pub fn depends_on_all<I: IntoIterator<Item = TaskId>>(&mut self, task_ids: I) {
+    pub fn depends_on_all<I: IntoIterator<Item =JobId>>(&mut self, task_ids: I) {
         task_ids.into_iter().for_each(|task_id| {
             self.depends_on(task_id);
         })
     }
 
-    pub fn set_source<T: 'static + Send, S>(&mut self, source: S) -> Result<(), TaskError>
+    pub fn set_source<T: 'static + Send, S>(&mut self, source: S) -> Result<(), JobError>
     where
         Self: InputSource<S, Data = T>,
     {
@@ -437,7 +437,7 @@ impl Input {
 pub trait AsOutputFlavor: Sealed {
     type Data: 'static;
 
-    fn to_output(self, id: TaskId) -> Output;
+    fn to_output(self, id: JobId) -> Output;
 }
 
 pub struct SingleOutput<T: 'static + Send>(PhantomData<T>);
@@ -454,11 +454,11 @@ impl<T: 'static + Send> Sealed for SingleOutput<T> {}
 impl<T: 'static + Send> AsOutputFlavor for SingleOutput<T> {
     type Data = T;
 
-    fn to_output(self, id: TaskId) -> Output {
+    fn to_output(self, id: JobId) -> Output {
         let (send, receive) = bounded::<Data>(1);
         let promise = RecvPromise::new(receive);
 
-        let f = move |data: Data| -> Result<(), TaskError> {
+        let f = move |data: Data| -> Result<(), JobError> {
             send.send(data)?;
             Ok(())
         };
@@ -480,7 +480,7 @@ impl Sealed for NoOutput {}
 impl AsOutputFlavor for NoOutput {
     type Data = ();
 
-    fn to_output(self, id: TaskId) -> Output {
+    fn to_output(self, id: JobId) -> Output {
         Output {
             task_id: id,
             output_ty: TypeId::of::<()>(),
@@ -499,7 +499,7 @@ impl<T: 'static + Send + Clone> Sealed for ReusableOutput<T> {}
 impl<T: 'static + Send + Sync + Clone> AsOutputFlavor for ReusableOutput<T> {
     type Data = T;
 
-    fn to_output(self, id: TaskId) -> Output {
+    fn to_output(self, id: JobId) -> Output {
         let (promise, f) = create_reusable::<T>();
 
         Output {
@@ -537,7 +537,7 @@ pub enum OutputFlavor {
 }
 
 pub struct Output {
-    task_id: TaskId,
+    task_id: JobId,
     output_ty: TypeId,
     output_ty_str: &'static str,
     flavor: OutputFlavor,
@@ -546,14 +546,14 @@ pub struct Output {
 }
 
 impl Output {
-    pub fn make_reusable<T: Send + Sync + Clone + 'static>(&mut self) -> Result<(), TaskError> {
+    pub fn make_reusable<T: Send + Sync + Clone + 'static>(&mut self) -> Result<(), JobError> {
         if TypeId::of::<T>() != self.output_ty {
-            return Err(TaskError::UnexpectedType {
+            return Err(JobError::UnexpectedType {
                 expected: self.output_ty_str,
                 received: type_name::<T>(),
             });
         } else if matches!(self.kind, OutputKind::Once(None)) {
-            return Err(TaskError::OutputAlreadyUsed);
+            return Err(JobError::OutputAlreadyUsed);
         }
 
         self.flavor = OutputFlavor::Reusable;
@@ -572,12 +572,12 @@ impl Output {
 
 fn create_reusable<T: Send + Sync + Clone + 'static>() -> (
     Reusable<'static, Data>,
-    impl FnOnce(Data) -> Result<(), TaskError> + Send + 'static,
+    impl FnOnce(Data) -> Result<(), JobError> + Send + 'static,
 ) {
     let (send, receive) = bounded::<T>(1);
     let promise: Reusable<T> = Reusable::new(Box::new(RecvPromise::new(receive)));
 
-    let f = move |data: Data| -> Result<(), TaskError> {
+    let f = move |data: Data| -> Result<(), JobError> {
         let as_t = *data.downcast::<T>().expect("failed to downcast to");
         send.send(as_t)
             .map_err(|SendError(e)| SendError(Box::new(e) as Data))?;
@@ -586,15 +586,15 @@ fn create_reusable<T: Send + Sync + Clone + 'static>() -> (
     (promise.into_data(), f)
 }
 
-struct SetOutputFn(Box<dyn FnOnce(Data) -> Result<(), TaskError> + Send>);
+struct SetOutputFn(Box<dyn FnOnce(Data) -> Result<(), JobError> + Send>);
 
 impl SetOutputFn {
-    fn new<F: FnOnce(Data) -> Result<(), TaskError> + Send + 'static>(f: F) -> Self {
-        let boxed = Box::new(f) as Box<dyn FnOnce(Data) -> Result<(), TaskError> + Send>;
+    fn new<F: FnOnce(Data) -> Result<(), JobError> + Send + 'static>(f: F) -> Self {
+        let boxed = Box::new(f) as Box<dyn FnOnce(Data) -> Result<(), JobError> + Send>;
         Self(boxed)
     }
 
-    fn accept(self, data: Data) -> Result<(), TaskError> {
+    fn accept(self, data: Data) -> Result<(), JobError> {
         (self.0)(data)
     }
 }
@@ -602,7 +602,7 @@ impl SetOutputFn {
 impl InputSource<&mut Output> for Input {
     type Data = Data;
 
-    fn use_as_input_source(&mut self, other: &mut Output) -> Result<(), TaskError> {
+    fn use_as_input_source(&mut self, other: &mut Output) -> Result<(), JobError> {
         match (self.flavor, other.flavor) {
             (InputFlavor::Single, OutputFlavor::Reusable) => {
                 let OutputKind::Reusable(reusable) = &mut other.kind else {
@@ -625,7 +625,7 @@ impl InputSource<&mut Output> for Input {
                 };
                 self.depends_on(other.task_id);
                 match once.take() {
-                    None => Err(TaskError::OutputCanNotBeReused),
+                    None => Err(JobError::OutputCanNotBeReused),
                     Some(some) => {
                         self.kind = InputKind::Single(some);
                         Ok(())
@@ -647,7 +647,7 @@ impl InputSource<&mut Output> for Input {
                 };
 
                 match once.take() {
-                    None => Err(TaskError::OutputCanNotBeReused),
+                    None => Err(JobError::OutputCanNotBeReused),
                     Some(some) => {
                         funnel.insert(some);
                         self.depends_on(other.task_id);
@@ -673,7 +673,7 @@ impl InputSource<&mut Output> for Input {
                 self.depends_on(other.task_id);
                 Ok(())
             }
-            (i, o) => Err(TaskError::OutputCanNotBeUsedAsInput {
+            (i, o) => Err(JobError::OutputCanNotBeUsedAsInput {
                 output_flavor: o,
                 input_flavor: i,
             }),
@@ -691,21 +691,21 @@ fortuples! {
     {
         type Data = (#(#Member::T,)*);
 
-        fn use_as_input_source(&mut self, mut other: #Tuple) -> Result<(), TaskError> {
+        fn use_as_input_source(&mut self, mut other: #Tuple) -> Result<(), JobError> {
             let (#(#Member,)*) = (#(#other.as_output(),)*);
             let task_ids = [#(#Member.task_id),*];
-            let promises = || -> Result<_, TaskError> {
+            let promises = || -> Result<_, JobError> {
                 let promise_set = [#(#Member,)*]
                     .iter_mut()
                     .map(|o| match &o.kind {
-                        OutputKind::None => Err(TaskError::OutputCanNotBeUsedAsInput {
+                        OutputKind::None => Err(JobError::OutputCanNotBeUsedAsInput {
                             output_flavor: OutputFlavor::None,
                             input_flavor: self.flavor,
                         }),
-                        OutputKind::Once(None) => Err(TaskError::OutputAlreadyUsed),
+                        OutputKind::Once(None) => Err(JobError::OutputAlreadyUsed),
                         OutputKind::Once(_) | OutputKind::Reusable(_) => Ok(o.into_promise()),
                     })
-                    .collect::<Result<PromiseSet<_>, TaskError>>()?;
+                    .collect::<Result<PromiseSet<_>, JobError >>()?;
 
                 Ok(promise_set
                     .into_promise()
@@ -723,7 +723,7 @@ fortuples! {
 
 
             match self.flavor {
-                InputFlavor::None => Err(TaskError::OutputCanNotBeUsedAsInput {
+                InputFlavor::None => Err(JobError::OutputCanNotBeUsedAsInput {
                     output_flavor: OutputFlavor::None,
                     input_flavor: self.flavor,
                 }),
@@ -766,9 +766,9 @@ fortuples! {
 impl InputSource<&mut FlowBackendInput> for Input {
     type Data = Data;
 
-    fn use_as_input_source(&mut self, other: &mut FlowBackendInput) -> Result<(), TaskError> {
+    fn use_as_input_source(&mut self, other: &mut FlowBackendInput) -> Result<(), JobError> {
         match self.flavor {
-            InputFlavor::None => Err(TaskError::UnexpectedInput),
+            InputFlavor::None => Err(JobError::UnexpectedInput),
             InputFlavor::Single => {
                 self.kind = InputKind::Single(Box::new(other.take_promise()?));
                 Ok(())
@@ -855,8 +855,9 @@ enum OutputKind {
     Reusable(Reusable<'static, Data>),
 }
 
+/// An error occurred while executing a job
 #[derive(Debug, Error)]
-pub enum TaskError {
+pub enum JobError {
     #[error("Output can not be re-used")]
     OutputCanNotBeReused,
     #[error("The input for this task is yet ready")]
@@ -888,15 +889,15 @@ pub enum TaskError {
     FlowBackendError(Box<FlowBackendError>),
 }
 
-impl From<FlowBackendError> for TaskError {
+impl From<FlowBackendError> for JobError {
     fn from(value: FlowBackendError) -> Self {
-        TaskError::FlowBackendError(Box::new(value))
+        JobError::FlowBackendError(Box::new(value))
     }
 }
 
 #[cfg(test)]
 pub(crate) mod test_fixtures {
-    use crate::backend::task::{Data, Input, InputFlavor, InputKind, InputSource, TaskError};
+    use crate::backend::job::{Data, Input, InputFlavor, InputKind, InputSource, JobError};
     use crate::promise::MapPromise;
     use crate::promise::{BoxPromise, Just};
     use std::any::{type_name, TypeId};
@@ -913,14 +914,14 @@ pub(crate) mod test_fixtures {
     impl<T: Send + Sync + 'static> InputSource<MockTaskInput<T>> for Input {
         type Data = T;
 
-        fn use_as_input_source(&mut self, other: MockTaskInput<T>) -> Result<(), TaskError> {
+        fn use_as_input_source(&mut self, other: MockTaskInput<T>) -> Result<(), JobError> {
             self.check_type::<T>()?;
             let as_promise = Just::new(other.into_inner()).map(|t| Box::new(t) as Data);
             match (self.flavor, &mut self.kind) {
-                (InputFlavor::None, _) => return Err(TaskError::UnexpectedInput),
+                (InputFlavor::None, _) => return Err(JobError::UnexpectedInput),
                 (InputFlavor::Single, InputKind::None) => {
                     if TypeId::of::<T>() != self.input_ty {
-                        return Err(TaskError::UnexpectedType {
+                        return Err(JobError::UnexpectedType {
                             expected: self.input_ty_str,
                             received: type_name::<T>(),
                         });
@@ -929,7 +930,7 @@ pub(crate) mod test_fixtures {
                     let promise = Box::new(as_promise) as BoxPromise<'static, Data>;
                     self.kind = InputKind::Single(promise);
                 }
-                (InputFlavor::Single, _) => return Err(TaskError::InputAlreadySet),
+                (InputFlavor::Single, _) => return Err(JobError::InputAlreadySet),
                 (InputFlavor::Funnel, InputKind::Funnel(funnel)) => {
                     funnel.insert(as_promise);
                 }
@@ -951,19 +952,19 @@ mod tests {
     use super::*;
     use crate::action::action;
     use crate::backend::flow_backend::FlowBackendOutput;
-    use crate::backend::task::test_fixtures::MockTaskInput;
+    use crate::backend::job::test_fixtures::MockTaskInput;
     use crate::promise::GetPromise;
     use std::thread;
 
     #[test]
     fn test_task_id() {
-        let TaskId(id) = TaskId::new();
+        let JobId(id) = JobId::new();
         assert!(id.get() > 0);
     }
 
     #[test]
     fn test_create_task() {
-        let mut task = BackendTask::new(
+        let mut task = BackendJob::new(
             "task",
             InputFlavor::Single,
             SingleOutput::new(),
@@ -981,7 +982,7 @@ mod tests {
     #[test]
     fn test_no_input_task() {
         let (tx, rx) = bounded::<&str>(1);
-        let mut task = BackendTask::new(
+        let mut task = BackendJob::new(
             "task",
             InputFlavor::None,
             SingleOutput::new(),
@@ -997,7 +998,7 @@ mod tests {
     #[test]
     fn test_flow_input_to_task() {
         let mut input = FlowBackendInput::default();
-        let mut task = BackendTask::new(
+        let mut task = BackendJob::new(
             "task",
             InputFlavor::Single,
             SingleOutput::new(),
@@ -1015,7 +1016,7 @@ mod tests {
     #[test]
     fn test_flow_output_from_task() {
         let mut output = FlowBackendOutput::default();
-        let mut task = BackendTask::new(
+        let mut task = BackendJob::new(
             "task",
             InputFlavor::None,
             SingleOutput::new(),
@@ -1036,7 +1037,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_no_input_task_with_input_fails() {
-        let _task = BackendTask::new(
+        let _task = BackendJob::new(
             "task",
             InputFlavor::None,
             SingleOutput::new(),
@@ -1046,13 +1047,13 @@ mod tests {
 
     #[test]
     fn test_chain_task() {
-        let mut task1 = BackendTask::new(
+        let mut task1 = BackendJob::new(
             "task1",
             InputFlavor::Single,
             SingleOutput::new(),
             action(|i: i32| i * i),
         );
-        let mut task2 = BackendTask::new(
+        let mut task2 = BackendJob::new(
             "task2",
             InputFlavor::Single,
             SingleOutput::new(),
@@ -1079,19 +1080,19 @@ mod tests {
 
     #[test]
     fn test_funnel_task() {
-        let mut task1 = BackendTask::new(
+        let mut task1 = BackendJob::new(
             "task1",
             InputFlavor::Single,
             SingleOutput::new(),
             action(|i: i32| i * i),
         );
-        let mut task2 = BackendTask::new(
+        let mut task2 = BackendJob::new(
             "task2",
             InputFlavor::Single,
             SingleOutput::new(),
             action(|i: i32| i * i * i),
         );
-        let mut task3 = BackendTask::new(
+        let mut task3 = BackendJob::new(
             "task3",
             InputFlavor::Single,
             SingleOutput::new(),

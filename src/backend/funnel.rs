@@ -1,4 +1,4 @@
-use crate::backend::task::Data;
+use crate::backend::job::Data;
 use crate::promise::MapPromise;
 use crate::promise::{IntoPromise, PollPromise, Promise, PromiseSet};
 

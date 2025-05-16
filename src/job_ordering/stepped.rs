@@ -1,5 +1,5 @@
-use crate::task_ordering::{FlowGraph, TaskOrderer, TaskOrdering, TaskOrderingError};
-use crate::{task_ordering, TaskId};
+use crate::job_ordering::{FlowGraph, JobOrderer, JobOrdering, JobOrderingError};
+use crate::{job_ordering, JobId};
 use petgraph::adj;
 use petgraph::adj::{IndexType, UnweightedList};
 use petgraph::algo::tred::dag_to_toposorted_adjacency_list;
@@ -12,22 +12,22 @@ use tracing::debug;
 #[derive(Default)]
 pub struct SteppedTaskOrderer;
 
-impl TaskOrderer for SteppedTaskOrderer {
-    type TaskOrdering = SteppedTaskOrdering;
+impl JobOrderer for SteppedTaskOrderer {
+    type JobOrdering = SteppedTaskOrdering;
 
-    fn create_ordering<G: FlowGraph>(&self, graph: G, max_jobs: usize) -> Result<Self::TaskOrdering, TaskOrderingError> {
+    fn create_ordering<G: FlowGraph>(&self, graph: G, max_jobs: usize) -> Result<Self::JobOrdering, JobOrderingError> {
         SteppedTaskOrdering::new(graph, max_jobs)
     }
 }
 
 #[derive(Debug)]
 pub struct SteppedTaskOrdering {
-    order: Vec<Vec<(TaskId, bool)>>,
+    order: Vec<Vec<(JobId, bool)>>,
 }
 
-impl TaskOrdering for SteppedTaskOrdering {
+impl JobOrdering for SteppedTaskOrdering {
 
-    fn poll(&mut self) -> Result<Vec<TaskId>, TaskOrderingError> {
+    fn poll(&mut self) -> Result<Vec<JobId>, JobOrderingError> {
         match self.order.last_mut() {
             None => {
                 Ok(vec![])
@@ -45,7 +45,7 @@ impl TaskOrdering for SteppedTaskOrdering {
         }
     }
 
-    fn offer(&mut self, task: TaskId) -> Result<(), TaskOrderingError> {
+    fn offer(&mut self, task: JobId) -> Result<(), JobOrderingError> {
         debug!("{task} finished");
         for step in &mut self.order.iter_mut().rev() {
             if let Some(idx) = step.iter().position(|(idx, _)| *idx ==task) {
@@ -64,12 +64,12 @@ impl TaskOrdering for SteppedTaskOrdering {
 
 impl SteppedTaskOrdering {
     /// Attempts to create a new task ordering
-    fn new<G>(flow_graph: G, w: usize) -> Result<Self, TaskOrderingError>
+    fn new<G>(flow_graph: G, w: usize) -> Result<Self, JobOrderingError>
     where
         G:  FlowGraph,
     {
-        let mut graph: DiGraph<TaskId, ()> = DiGraph::new();
-        let tasks: HashSet<_> = flow_graph.tasks().into_iter().collect();
+        let mut graph: DiGraph<JobId, ()> = DiGraph::new();
+        let tasks: HashSet<_> = flow_graph.jobs().into_iter().collect();
 
         for id in &tasks {
             graph.add_node(*id);
@@ -87,9 +87,9 @@ impl SteppedTaskOrdering {
 
 
         let toposort = toposort(&graph, None).map_err(|cycle| {
-            let cycle = task_ordering::get_cycle(&graph, cycle.node_id()).expect("failed to get a cycle");
+            let cycle = job_ordering::get_cycle(&graph, cycle.node_id()).expect("failed to get a cycle");
 
-            TaskOrderingError::CyclicTasks {
+            JobOrderingError::CyclicTasks {
                 cycle: cycle.iter().map(|idx| graph[*idx]).collect(),
             }
         })?;
@@ -218,10 +218,10 @@ mod tests {
     use super::*;
     use crate::action::action;
     use crate::backend::flow_backend::BackendFlowGraph;
-    use crate::backend::task::{BackendTask, InputFlavor, ReusableOutput, SingleOutput, TaskError};
+    use crate::backend::job::{BackendJob, InputFlavor, ReusableOutput, SingleOutput, JobError};
 
-    fn quick_task(name: &str) -> BackendTask {
-        BackendTask::new(
+    fn quick_task(name: &str) -> BackendJob {
+        BackendJob::new(
             name,
             InputFlavor::Single,
             ReusableOutput::new(),
@@ -229,7 +229,7 @@ mod tests {
         )
     }
 
-    fn create_order(width: usize, tasks: &[BackendTask]) -> SteppedTaskOrdering {
+    fn create_order(width: usize, tasks: &[BackendJob]) -> SteppedTaskOrdering {
         SteppedTaskOrderer::default()
             .create_ordering(
                 BackendFlowGraph::new(tasks),
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_make_reusable() {
-        let mut b = BackendTask::new(
+        let mut b = BackendJob::new(
             "test",
             InputFlavor::None,
             SingleOutput::new(),
@@ -248,7 +248,7 @@ mod tests {
         );
         assert!(matches!(
             b.output_mut().make_reusable::<isize>(),
-            Err(TaskError::UnexpectedType { .. })
+            Err(JobError::UnexpectedType { .. })
         ));
         assert!(matches!(b.output_mut().make_reusable::<&str>(), Ok(())));
     }

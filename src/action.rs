@@ -1,7 +1,7 @@
 //! Actions maps an input to an output
 
 use std::marker::PhantomData;
-use crate::backend::task::InputFlavor;
+use crate::backend::job::InputFlavor;
 
 /// A step
 pub trait Action: Send {

@@ -1,8 +1,8 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use flow_rs::{Flow, FlowBuilder, FlowError, FlowThreadPool, FlowsInto, TaskRef};
-use flow_rs::task_ordering::{GraphTraversalTaskOrderer, SteppedTaskOrderer, TaskOrderer};
+use flow_rs::{Flow, FlowBuilder, FlowError, FlowThreadPool, FlowsInto, JobRef};
+use flow_rs::job_ordering::{GraphTraversalTaskOrderer, SteppedTaskOrderer, JobOrderer};
 
-fn gradle_flow<TO: TaskOrderer>(flow: &mut Flow<(), (), TO>) -> Result<(), FlowError> {
+fn gradle_flow<TO: JobOrderer>(flow: &mut Flow<(), (), TO>) -> Result<(), FlowError> {
     flow.create("help", || {});
     flow.create("start", || {});
     Ok(())

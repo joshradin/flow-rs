@@ -1,4 +1,6 @@
-use crate::TaskId;
+//! Job ordering traits and structures
+
+use crate::JobId;
 use petgraph::adj::IndexType;
 use petgraph::algo::{kosaraju_scc, Cycle};
 use petgraph::graph::DiGraph;
@@ -16,28 +18,28 @@ pub type DefaultTaskOrderer = stepped::SteppedTaskOrderer;
 
 /// A basic flow graph
 pub trait FlowGraph {
-    type Tasks: IntoIterator<Item = TaskId>;
-    type DependsOn: IntoIterator<Item = TaskId>;
-    type Dependents: IntoIterator<Item = TaskId>;
+    type Jobs: IntoIterator<Item =JobId>;
+    type DependsOn: IntoIterator<Item =JobId>;
+    type Dependents: IntoIterator<Item =JobId>;
 
     /// Gets all tasks in this flow graph
-    fn tasks(&self) -> Self::Tasks;
+    fn jobs(&self) -> Self::Jobs;
 
-    /// Gets the tasks that `task` depends on directly (incoming tasks).
-    fn dependencies(&self, task: &TaskId) -> Self::DependsOn;
-    /// Gets the tasks that depend on `task` (outgoing tasks).
-    fn dependents(&self, task: &TaskId) -> Self::DependsOn;
+    /// Gets the jobs that `job` depends on directly (incoming tasks).
+    fn dependencies(&self, job: &JobId) -> Self::DependsOn;
+    /// Gets the jobs that depend on `job` (outgoing tasks).
+    fn dependents(&self, job: &JobId) -> Self::DependsOn;
 }
 
 /// The job of the task orderer is to create available tasks for a flow graph
-pub trait TaskOrdering {
+pub trait JobOrdering {
     /// Gets any available tasks
-    fn poll(&mut self) -> Result<Vec<TaskId>, TaskOrderingError>;
+    fn poll(&mut self) -> Result<Vec<JobId>, JobOrderingError>;
     /// Offer a finished task back to the orderer
-    fn offer(&mut self, task: TaskId) -> Result<(), TaskOrderingError>;
+    fn offer(&mut self, task: JobId) -> Result<(), JobOrderingError>;
 
     /// Offers all the given task ids
-    fn offer_all(&mut self, i: impl IntoIterator<Item = TaskId>) -> Result<(), TaskOrderingError> {
+    fn offer_all(&mut self, i: impl IntoIterator<Item =JobId>) -> Result<(), JobOrderingError> {
         for i in i {
             self.offer(i)?;
         }
@@ -48,29 +50,29 @@ pub trait TaskOrdering {
     fn empty(&self) -> bool;
 }
 
-/// Responsible with creating a [`TaskOrdering`]
-pub trait TaskOrderer {
+/// Responsible with creating a [`JobOrdering`]
+pub trait JobOrderer {
     /// The task order to create
-    type TaskOrdering: TaskOrdering;
+    type JobOrdering: JobOrdering;
 
     /// tries to create an task orderer
     fn create_ordering<G: FlowGraph>(
         &self,
         graph: G,
         max_jobs: usize,
-    ) -> Result<Self::TaskOrdering, TaskOrderingError>;
+    ) -> Result<Self::JobOrdering, JobOrderingError>;
 }
 
 #[derive(Debug, Clone, Error)]
-pub enum TaskOrderingError {
+pub enum JobOrderingError {
     #[error("A cycle was detected. {}", format_cycle(cycle))]
-    CyclicTasks { cycle: Vec<TaskId> },
+    CyclicTasks { cycle: Vec<JobId> },
     #[error("Task {task} is not part of this graph")]
-    UnknownTask { task: TaskId },
+    UnknownTask { task: JobId },
 }
 
-impl TaskOrderingError {
-    fn cycle<Ix: IndexType>(err: Cycle<NodeIndex<Ix>>, graph: &DiGraph<TaskId, (), Ix>) -> Self {
+impl JobOrderingError {
+    fn cycle<Ix: IndexType>(err: Cycle<NodeIndex<Ix>>, graph: &DiGraph<JobId, (), Ix>) -> Self {
         let node_idx = get_cycle(graph, err.node_id()).unwrap();
         let task_ids: Vec<_> = node_idx.into_iter().map(|idx| graph[idx]).collect();
         Self::CyclicTasks { cycle: task_ids }

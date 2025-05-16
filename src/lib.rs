@@ -2,7 +2,7 @@
 //!
 //! Do concurrent tasks safely and easily.
 
-pub mod task_ordering;
+pub mod job_ordering;
 pub mod action;
 pub(crate) mod backend;
 mod flow;
@@ -12,4 +12,4 @@ pub mod listener;
 
 pub use flow::*;
 pub use pool::FlowThreadPool;
-pub use backend::task::{TaskId, TaskError};
+pub use backend::job::{JobId, JobError};

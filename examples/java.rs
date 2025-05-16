@@ -1,10 +1,10 @@
 use flow_rs::listener::FlowListener;
-use flow_rs::{Flow, FlowError, TaskError, TaskId};
+use flow_rs::{Flow, FlowError, JobError, JobId};
 use indicatif::style::ProgressTracker;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use flow_rs::task_ordering::GraphTraversalTaskOrderer;
+use flow_rs::job_ordering::GraphTraversalTaskOrderer;
 
 #[path = "../tests/gradle_like.rs"]
 mod gradle_like;
@@ -13,7 +13,7 @@ struct ProgressLogger {
     start: Instant,
     multi_progress: MultiProgress,
     main: Option<ProgressBar>,
-    task_bars: HashMap<TaskId, ProgressBar>,
+    task_bars: HashMap<JobId, ProgressBar>,
 }
 
 impl ProgressLogger {
@@ -37,7 +37,7 @@ impl FlowListener for ProgressLogger {
         self.main.as_mut().unwrap().set_message("Running flow")
     }
 
-    fn task_started(&mut self, id: TaskId, nickname: &str) {
+    fn task_started(&mut self, id: JobId, nickname: &str) {
         let style = ProgressStyle::with_template("> {msg}").unwrap();
         let bar = self.multi_progress.add(
             ProgressBar::new_spinner()
@@ -48,7 +48,7 @@ impl FlowListener for ProgressLogger {
         self.task_bars.insert(id, bar);
     }
 
-    fn task_finished(&mut self, id: TaskId, nickname: &str, _result: Result<(), &TaskError>) {
+    fn task_finished(&mut self, id: JobId, nickname: &str, _result: Result<(), &JobError>) {
         if let Some(bar) = self.task_bars.remove(&id) {
             bar.finish_and_clear();
             self.multi_progress.println(format!("> {nickname}\n")).unwrap();

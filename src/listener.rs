@@ -1,6 +1,6 @@
 //! Listens to [`Flow`](crate::Flow) events
 
-use crate::{FlowError, TaskError, TaskId};
+use crate::{FlowError, JobError, JobId};
 
 /// Listens to a [`Flow`] instance.
 pub trait FlowListener {
@@ -8,13 +8,13 @@ pub trait FlowListener {
     fn started(&mut self) {}
 
     /// A task started
-    fn task_started(&mut self, id: TaskId, nickname: &str) {
+    fn task_started(&mut self, id: JobId, nickname: &str) {
         let _id = id;
         let _nickname = nickname;
     }
 
     /// A task finished
-    fn task_finished(&mut self, id: TaskId, nickname: &str, result: Result<(), &TaskError>) {
+    fn task_finished(&mut self, id: JobId, nickname: &str, result: Result<(), &JobError>) {
         let _id  = id;
         let _nickname = nickname;
         let _result = result;
@@ -28,11 +28,11 @@ pub trait FlowListener {
 pub struct PrintTaskListener;
 
 impl FlowListener for PrintTaskListener {
-    fn task_started(&mut self, _id: TaskId, nickname: &str) {
+    fn task_started(&mut self, _id: JobId, nickname: &str) {
         println!("== started: {} ==", nickname);
     }
 
-    fn task_finished(&mut self, _id: TaskId, nickname: &str, result: Result<(), &TaskError>) {
+    fn task_finished(&mut self, _id: JobId, nickname: &str, result: Result<(), &JobError>) {
         println!("== finished: {}. {result:?} ==", nickname);
     }
 }

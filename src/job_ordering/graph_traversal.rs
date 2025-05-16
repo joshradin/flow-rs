@@ -1,5 +1,5 @@
-use crate::task_ordering::{FlowGraph, TaskOrderer, TaskOrdering, TaskOrderingError};
-use crate::TaskId;
+use crate::job_ordering::{FlowGraph, JobOrderer, JobOrdering, JobOrderingError};
+use crate::JobId;
 use petgraph::acyclic::Acyclic;
 use petgraph::prelude::*;
 use std::collections::HashSet;
@@ -9,19 +9,19 @@ use tracing::trace;
 #[derive(Default)]
 pub struct GraphTraversalTaskOrderer;
 
-impl TaskOrderer for GraphTraversalTaskOrderer {
-    type TaskOrdering = GraphTraversalTaskOrdering;
+impl JobOrderer for GraphTraversalTaskOrderer {
+    type JobOrdering = GraphTraversalTaskOrdering;
 
     fn create_ordering<G: FlowGraph>(
         &self,
         graph: G,
         _max_jobs: usize,
-    ) -> Result<Self::TaskOrdering, TaskOrderingError> {
+    ) -> Result<Self::JobOrdering, JobOrderingError> {
         let mut pet_graph = DiGraph::new();
-        for t in graph.tasks().into_iter() {
+        for t in graph.jobs().into_iter() {
             pet_graph.add_node(t);
         }
-        for t in graph.tasks().into_iter() {
+        for t in graph.jobs().into_iter() {
             let t_idx = pet_graph
                 .node_indices()
                 .find(|i| pet_graph[*i] == t)
@@ -36,7 +36,7 @@ impl TaskOrderer for GraphTraversalTaskOrderer {
         }
 
         let acyclic = Acyclic::try_from_graph(pet_graph.clone())
-            .map_err(|e| TaskOrderingError::cycle(e, &pet_graph))?;
+            .map_err(|e| JobOrderingError::cycle(e, &pet_graph))?;
 
         Ok(GraphTraversalTaskOrdering {
             in_use: HashSet::new(),
@@ -46,12 +46,12 @@ impl TaskOrderer for GraphTraversalTaskOrderer {
 }
 
 pub struct GraphTraversalTaskOrdering {
-    in_use: HashSet<TaskId>,
-    graph: Acyclic<DiGraph<TaskId, ()>>,
+    in_use: HashSet<JobId>,
+    graph: Acyclic<DiGraph<JobId, ()>>,
 }
 
-impl TaskOrdering for GraphTraversalTaskOrdering {
-    fn poll(&mut self) -> Result<Vec<TaskId>, TaskOrderingError> {
+impl JobOrdering for GraphTraversalTaskOrdering {
+    fn poll(&mut self) -> Result<Vec<JobId>, JobOrderingError> {
         let result = self
             .graph
             .node_indices()
@@ -73,12 +73,12 @@ impl TaskOrdering for GraphTraversalTaskOrdering {
         Ok(result)
     }
 
-    fn offer(&mut self, task: TaskId) -> Result<(), TaskOrderingError> {
+    fn offer(&mut self, task: JobId) -> Result<(), JobOrderingError> {
         let node_idx = self
             .graph
             .node_indices()
             .find(|i| self.graph[*i] == task)
-            .ok_or(TaskOrderingError::UnknownTask { task })?;
+            .ok_or(JobOrderingError::UnknownTask { task })?;
 
         self.in_use.remove(&task);
         self.graph.remove_node(node_idx);
