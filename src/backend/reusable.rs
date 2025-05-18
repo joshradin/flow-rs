@@ -104,7 +104,8 @@ where
     }
 }
 
-impl<'lf, T: Send + Sync + 'lf, P: Promise<Output = T> + 'lf> crate::promise::IntoPromise for Reusable<'lf, T, P>
+impl<'lf, T: Send + Sync + 'lf, P: Promise<Output = T> + 'lf> crate::promise::IntoPromise
+    for Reusable<'lf, T, P>
 where
     T: Send + Sync + 'lf,
     P: Promise<Output = T> + 'lf,
@@ -119,7 +120,8 @@ where
 
 /// The reusable promise
 pub struct IntoPromise<'lf, T, P: Promise<Output = T> + 'lf>
-where T: Send + Sync + 'lf,
+where
+    T: Send + Sync + 'lf,
 {
     inner: Reusable<'lf, T, P>,
 }

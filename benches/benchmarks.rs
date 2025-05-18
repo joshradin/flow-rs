@@ -1,6 +1,6 @@
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use jobflow::job_ordering::{GraphTraversalTaskOrderer, JobOrderer, SteppedTaskOrderer};
 use jobflow::{Flow, FlowBuilder, FlowError, FlowThreadPool, FlowsInto, JobRef};
-use jobflow::job_ordering::{GraphTraversalTaskOrderer, SteppedTaskOrderer, JobOrderer};
 
 fn gradle_flow<TO: JobOrderer>(flow: &mut Flow<(), (), TO>) -> Result<(), FlowError> {
     flow.create("help", || {});
@@ -38,7 +38,7 @@ fn bench_gradle_flow(c: &mut Criterion) {
                 flow
             },
             |flow| {
-               flow.run().unwrap();
+                flow.run().unwrap();
             },
             BatchSize::SmallInput,
         )

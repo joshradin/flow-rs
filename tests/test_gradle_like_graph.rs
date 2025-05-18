@@ -1,7 +1,7 @@
 //! Tests a gradle-like scenario
 
-use jobflow::listener::PrintTaskListener;
 use jobflow::job_ordering::GraphTraversalTaskOrderer;
+use jobflow::listener::PrintTaskListener;
 use jobflow::{FlowBuilder, FlowError, FlowThreadPool};
 use std::time::Duration;
 use test_log::test;

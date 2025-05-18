@@ -1,9 +1,9 @@
 use crate::action::IntoAction;
 use crate::backend::flow_backend::{FlowBackend, FlowBackendError};
 use crate::backend::flow_listener_shim::FlowListenerShim;
-use crate::backend::job::{BackendJob, JobId, SingleOutput, JobError, TypedOutput};
-use crate::job_ordering::{format_cycle, FlowGraph, JobOrderingError};
+use crate::backend::job::{BackendJob, JobError, JobId, SingleOutput, TypedOutput};
 use crate::job_ordering::{DefaultTaskOrderer, JobOrderer, SteppedTaskOrderer};
+use crate::job_ordering::{FlowGraph, JobOrderingError, format_cycle};
 use crate::listener::FlowListener;
 use crate::pool::FlowThreadPool;
 use crate::promise::{IntoPromise, PromiseExt};
@@ -500,6 +500,8 @@ where
         Ok(other)
     }
 }
+
+/// Flow implementation for funnelled
 #[diagnostic::do_not_recommend]
 impl<T, I, U, TO: JobOrderer> FlowsInto<U> for Vec<T>
 where
@@ -512,6 +514,20 @@ where
         for item in self {
             try_set_flow(&item, &other)?;
         }
+        Ok(other)
+    }
+}
+
+#[diagnostic::do_not_recommend]
+impl<'a, T, U, I, TO: JobOrderer> FlowsInto<&'a Funneled<U>> for T
+where
+    T: JobRefWithBackend<Out = I, TO = TO>,
+    U: JobRefWithBackend<In: FromIterator<I>, TO = TO>,
+{
+    type Out = Result<&'a Funneled<U>, FlowError>;
+
+    fn flows_into(self, other: &'a Funneled<U>) -> Self::Out {
+        try_set_flow(&self, other)?;
         Ok(other)
     }
 }
@@ -674,7 +690,10 @@ impl<T: JobRefWithBackend> JobRef for Funneled<T> {
     }
 }
 
-impl<T: JobRefWithBackend> FunneledJobRef for Funneled<T> {}
+impl<Element, T: JobRefWithBackend> FunneledJobRef for Funneled<T> where
+    T::In: IntoIterator<Item = Element> + FromIterator<Element>
+{
+}
 impl<T: FunneledJobRef> FunneledJobRef for Reusable<T> {}
 
 impl<I, T: JobRefWithBackend<In = I>> FlowsInto<T> for FlowInput<I, T::TO> {
@@ -781,13 +800,11 @@ mod tests {
         let t1 = flow
             .create("create_i32", |i: Vec<i32>| 12_i32)
             .funnelled()
-            .expect("Should be Ok")
-            .reusable()
-            .unwrap();
-        let t2 = flow.create("consume_i32", |i: i32| {});
-        let t3 = flow.create("consume_i32", |i: i32| {});
+            .expect("Should be Ok");
+        let t2 = flow.create("produce_i32", || 255_i32);
+        let t3 = flow.create("produce_i32", || 128_i32);
 
-        // t1.as_ref().flows_into(t2).expect("Should be Ok");
-        // t1.as_ref().flows_into(t3).expect("Should be Ok");
+        t2.flows_into(&t1).expect("Should be Ok");
+        t3.flows_into(&t1).expect("Should be Ok");
     }
 }

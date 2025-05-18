@@ -15,7 +15,7 @@ pub trait FlowListener {
 
     /// A task finished
     fn task_finished(&mut self, id: JobId, nickname: &str, result: Result<(), &JobError>) {
-        let _id  = id;
+        let _id = id;
         let _nickname = nickname;
         let _result = result;
     }
@@ -36,4 +36,3 @@ impl FlowListener for PrintTaskListener {
         println!("== finished: {}. {result:?} ==", nickname);
     }
 }
-

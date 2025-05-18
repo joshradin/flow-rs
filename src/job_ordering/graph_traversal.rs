@@ -1,5 +1,5 @@
-use crate::job_ordering::{FlowGraph, JobOrderer, JobOrdering, JobOrderingError};
 use crate::JobId;
+use crate::job_ordering::{FlowGraph, JobOrderer, JobOrdering, JobOrderingError};
 use petgraph::acyclic::Acyclic;
 use petgraph::prelude::*;
 use std::collections::HashSet;

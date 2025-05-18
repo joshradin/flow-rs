@@ -1,17 +1,17 @@
 //! A task within the backend
 
-use crate::action::{action, Action, BoxAction, Runnable};
+use crate::action::{Action, BoxAction, Runnable, action};
 use crate::backend::flow_backend::{FlowBackendError, FlowBackendInput};
 use crate::backend::funnel::BackendFunnel;
+use crate::backend::job::private::Sealed;
 use crate::backend::recv_promise::RecvPromise;
 use crate::backend::reusable;
 use crate::backend::reusable::Reusable;
-use crate::backend::job::private::Sealed;
 use crate::promise::{BoxPromise, PollPromise, Promise, PromiseExt, PromiseSet};
 use crate::promise::{IntoPromise, MapPromise};
-use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
+use crossbeam::channel::{Receiver, RecvError, SendError, Sender, bounded};
 use fortuples::fortuples;
-use std::any::{type_name, Any, TypeId};
+use std::any::{Any, TypeId, type_name};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
@@ -416,7 +416,7 @@ impl Input {
 
     /// Sets an explicit task ordering
     #[inline]
-    pub fn depends_on_all<I: IntoIterator<Item =JobId>>(&mut self, task_ids: I) {
+    pub fn depends_on_all<I: IntoIterator<Item = JobId>>(&mut self, task_ids: I) {
         task_ids.into_iter().for_each(|task_id| {
             self.depends_on(task_id);
         })
@@ -512,7 +512,6 @@ impl<T: 'static + Send + Sync + Clone> AsOutputFlavor for ReusableOutput<T> {
         }
     }
 }
-
 
 impl<T: 'static + Send + Clone> ReusableOutput<T> {
     /// Create a new reusable output
@@ -680,8 +679,6 @@ impl InputSource<&mut Output> for Input {
         }
     }
 }
-
-
 
 fortuples! {
     #[tuples::min_size(1)]
@@ -900,7 +897,7 @@ pub(crate) mod test_fixtures {
     use crate::backend::job::{Data, Input, InputFlavor, InputKind, InputSource, JobError};
     use crate::promise::MapPromise;
     use crate::promise::{BoxPromise, Just};
-    use std::any::{type_name, TypeId};
+    use std::any::{TypeId, type_name};
 
     /// Used for mocking a task input
     pub struct MockTaskInput<T>(pub T);

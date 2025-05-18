@@ -1,5 +1,5 @@
-use crossbeam::channel::{Receiver, TryRecvError};
 use crate::promise::{PollPromise, Promise};
+use crossbeam::channel::{Receiver, TryRecvError};
 
 pub struct RecvPromise<T> {
     receiver: Receiver<T>,
@@ -16,12 +16,8 @@ impl<T: Send> Promise for RecvPromise<T> {
 
     fn poll(&mut self) -> PollPromise<Self::Output> {
         match self.receiver.try_recv() {
-            Ok(t) => {
-                PollPromise::Ready(t)
-            }
-            Err(TryRecvError::Empty) => {
-                PollPromise::Pending
-            }
+            Ok(t) => PollPromise::Ready(t),
+            Err(TryRecvError::Empty) => PollPromise::Pending,
             Err(TryRecvError::Disconnected) => {
                 panic!("Promise channel is disconnected")
             }

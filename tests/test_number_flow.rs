@@ -80,9 +80,7 @@ fn populate_flow<T: JobOrderer>(
     for i in 0..test_data.len() {
         let step_ref = flow.create(
             format!("addSum[{i}]"),
-            action(move |(vs, sum): (Vec<i32>, i32)| {
-                vs[i] + sum
-            }),
+            action(move |(vs, sum): (Vec<i32>, i32)| vs[i] + sum),
         );
         let step_ref = (f, sum).flows_into(step_ref)?;
         // step_ref.flows_from((flow.input().nth(i), sum.clone()));

@@ -2,7 +2,7 @@
 
 use crate::JobId;
 use petgraph::adj::IndexType;
-use petgraph::algo::{kosaraju_scc, Cycle};
+use petgraph::algo::{Cycle, kosaraju_scc};
 use petgraph::graph::DiGraph;
 use petgraph::prelude::NodeIndex;
 use std::fmt::Display;
@@ -18,9 +18,9 @@ pub type DefaultTaskOrderer = stepped::SteppedTaskOrderer;
 
 /// A basic flow graph
 pub trait FlowGraph {
-    type Jobs: IntoIterator<Item =JobId>;
-    type DependsOn: IntoIterator<Item =JobId>;
-    type Dependents: IntoIterator<Item =JobId>;
+    type Jobs: IntoIterator<Item = JobId>;
+    type DependsOn: IntoIterator<Item = JobId>;
+    type Dependents: IntoIterator<Item = JobId>;
 
     /// Gets all tasks in this flow graph
     fn jobs(&self) -> Self::Jobs;
@@ -39,7 +39,7 @@ pub trait JobOrdering {
     fn offer(&mut self, task: JobId) -> Result<(), JobOrderingError>;
 
     /// Offers all the given task ids
-    fn offer_all(&mut self, i: impl IntoIterator<Item =JobId>) -> Result<(), JobOrderingError> {
+    fn offer_all(&mut self, i: impl IntoIterator<Item = JobId>) -> Result<(), JobOrderingError> {
         for i in i {
             self.offer(i)?;
         }

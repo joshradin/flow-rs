@@ -5,14 +5,14 @@ use static_assertions::assert_impl_all;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZero;
-use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{io, thread};
-use tracing::{error_span, trace, Span};
+use tracing::{Span, error_span, trace};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct WorkerThreadId(NonZero<usize>);
@@ -109,12 +109,11 @@ impl InnerThreadPool {
         loop {
             if worker_count < self.settings.max_size() {
                 if task_count > worker_count {
-                    if self.active_workers.compare_exchange(
-                        worker_count,
-                        worker_count + 1,
-                        AcqRel,
-                        Relaxed,
-                    ).is_ok() {
+                    if self
+                        .active_workers
+                        .compare_exchange(worker_count, worker_count + 1, AcqRel, Relaxed)
+                        .is_ok()
+                    {
                         let worker = self.spawn_worker()?;
                         trace!("spawned worker {:?}", worker.id);
                         let mut lock = self.handles.lock();
@@ -149,12 +148,11 @@ impl InnerThreadPool {
             // trace!("checking if {id:?} should be stopped");
             let current_workers = self.active_workers.load(Relaxed);
             if self.should_stop() {
-                if self.active_workers.compare_exchange(
-                    current_workers,
-                    current_workers - 1,
-                    AcqRel,
-                    Relaxed,
-                ).is_ok() {
+                if self
+                    .active_workers
+                    .compare_exchange(current_workers, current_workers - 1, AcqRel, Relaxed)
+                    .is_ok()
+                {
                     let mut workers = self.handles.lock();
                     let index = workers.iter().position(|p| p.id == id);
                     if let Some(index) = index {

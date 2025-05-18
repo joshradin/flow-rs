@@ -1,7 +1,7 @@
 //! Actions maps an input to an output
 
-use std::marker::PhantomData;
 use crate::backend::job::InputFlavor;
+use std::marker::PhantomData;
 
 /// A step
 pub trait Action: Send {
@@ -199,7 +199,10 @@ impl<R: Send + 'static, F: FnMut() -> R + Send + 'static> IntoAction<(), R, Prod
     type Action = BoxAction<'static, (), R>;
 
     fn into_action(mut self) -> (InputFlavor, Self::Action) {
-        (InputFlavor::None, Box::new(action(move |_: ()| self())) as BoxAction<'static, (), R>)
+        (
+            InputFlavor::None,
+            Box::new(action(move |_: ()| self())) as BoxAction<'static, (), R>,
+        )
     }
 }
 
@@ -217,7 +220,7 @@ impl<T: Send + 'static, R: Send + 'static, F: FnMut(T) -> R + Send + 'static>
 impl<A: Action> IntoAction<A::Input, A::Output, ()> for A {
     type Action = A;
 
-    fn into_action(self) ->(InputFlavor, Self::Action){
+    fn into_action(self) -> (InputFlavor, Self::Action) {
         (InputFlavor::Single, self)
     }
 }

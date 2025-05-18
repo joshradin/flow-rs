@@ -1,19 +1,19 @@
 //! Actual flow backend
 
+use crate::backend::job::{BackendJob, Data, JobError, JobId, Output};
 use crate::backend::recv_promise::RecvPromise;
-use crate::backend::job::{BackendJob, Data, Output, JobError, JobId};
-use crate::pool::{FlowThreadPool, WorkerPool};
-use crate::promise::{BoxPromise, IntoPromise, PollPromise, PromiseSet};
 use crate::job_ordering::{DefaultTaskOrderer, FlowGraph};
 use crate::job_ordering::{JobOrderer, JobOrdering, JobOrderingError};
-use crossbeam::channel::{bounded, Receiver, SendError, Sender, TryRecvError};
+use crate::pool::{FlowThreadPool, WorkerPool};
+use crate::promise::{BoxPromise, IntoPromise, PollPromise, PromiseSet};
+use crossbeam::channel::{Receiver, SendError, Sender, TryRecvError, bounded};
 use parking_lot::Mutex;
-use std::cmp::{Ordering};
+use static_assertions::assert_impl_all;
+use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Instant;
-use static_assertions::assert_impl_all;
 use thiserror::Error;
 use tracing::{debug, error_span, trace};
 
@@ -27,7 +27,6 @@ pub struct FlowBackend<T: JobOrderer = DefaultTaskOrderer, P: WorkerPool = FlowT
     input: FlowBackendInput,
     output: FlowBackendOutput,
 }
-
 
 assert_impl_all!(FlowBackend: Send);
 

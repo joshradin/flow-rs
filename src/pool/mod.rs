@@ -11,8 +11,8 @@ use static_assertions::assert_impl_all;
 use std::sync::Arc;
 use std::time::Duration;
 
-mod settings;
 mod inner_thread_pool;
+mod settings;
 
 /// Pool trait
 pub trait WorkerPool {
@@ -31,7 +31,7 @@ pub trait WorkerPool {
 #[derive(Clone)]
 pub struct FlowThreadPool {
     settings: ThreadPoolSettings,
-    inner: Arc<InnerThreadPool>
+    inner: Arc<InnerThreadPool>,
 }
 
 impl Default for FlowThreadPool {
@@ -51,7 +51,7 @@ impl FlowThreadPool {
     fn with_settings(settings: ThreadPoolSettings) -> Self {
         Self {
             settings,
-            inner: InnerThreadPool::new(settings)
+            inner: InnerThreadPool::new(settings),
         }
     }
 }
@@ -73,18 +73,20 @@ impl WorkerPool for FlowThreadPool {
     ) -> impl Promise<Output = T> + use<F, T> {
         let (tx, rx) = bounded::<T>(1);
         let recv_promise = RecvPromise::new(rx);
-        self.inner.submit(move || {
-            let t = f();
-            let _ = tx.try_send(t);
-        }).expect("failed to submit promise");
+        self.inner
+            .submit(move || {
+                let t = f();
+                let _ = tx.try_send(t);
+            })
+            .expect("failed to submit promise");
         FlowThreadPoolPromise {
-            wrapped: recv_promise
+            wrapped: recv_promise,
         }
     }
 }
 
 pub struct FlowThreadPoolPromise<T> {
-    wrapped: RecvPromise<T>
+    wrapped: RecvPromise<T>,
 }
 
 impl<T: Send> Promise for FlowThreadPoolPromise<T> {

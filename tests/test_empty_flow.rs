@@ -1,4 +1,3 @@
-
 use jobflow::Flow;
 
 #[test]

@@ -1,10 +1,10 @@
-use jobflow::listener::FlowListener;
-use jobflow::{Flow, FlowError, JobError, JobId};
 use indicatif::style::ProgressTracker;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use jobflow::job_ordering::GraphTraversalTaskOrderer;
+use jobflow::listener::FlowListener;
+use jobflow::{Flow, FlowError, JobError, JobId};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use jobflow::job_ordering::GraphTraversalTaskOrderer;
 
 #[path = "../tests/gradle_like.rs"]
 mod gradle_like;
@@ -39,9 +39,7 @@ impl FlowListener for ProgressLogger {
 
     fn task_started(&mut self, id: JobId, nickname: &str) {
         let style = ProgressStyle::with_template("> {msg}").unwrap();
-        let bar = self.multi_progress.add(
-            ProgressBar::new_spinner()
-        );
+        let bar = self.multi_progress.add(ProgressBar::new_spinner());
         bar.set_style(style);
         bar.set_message(nickname.to_owned());
         bar.enable_steady_tick(Duration::from_millis(100));
@@ -51,7 +49,9 @@ impl FlowListener for ProgressLogger {
     fn task_finished(&mut self, id: JobId, nickname: &str, _result: Result<(), &JobError>) {
         if let Some(bar) = self.task_bars.remove(&id) {
             bar.finish_and_clear();
-            self.multi_progress.println(format!("> {nickname}\n")).unwrap();
+            self.multi_progress
+                .println(format!("> {nickname}\n"))
+                .unwrap();
         }
     }
 
@@ -69,14 +69,10 @@ fn main() -> Result<(), FlowError> {
     gradle_like::create_flow(&mut flow)?;
     let mut m = MultiProgress::new();
 
-
     let logger = ProgressLogger::new(&m);
     flow.add_listener(logger);
 
-
     flow.run()?;
-
-
 
     Ok(())
 }

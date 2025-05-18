@@ -1,9 +1,9 @@
 use crate::job_ordering::{FlowGraph, JobOrderer, JobOrdering, JobOrderingError};
-use crate::{job_ordering, JobId};
+use crate::{JobId, job_ordering};
 use petgraph::adj;
 use petgraph::adj::{IndexType, UnweightedList};
+use petgraph::algo::toposort;
 use petgraph::algo::tred::dag_to_toposorted_adjacency_list;
-use petgraph::algo::{toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashSet};
@@ -15,7 +15,11 @@ pub struct SteppedTaskOrderer;
 impl JobOrderer for SteppedTaskOrderer {
     type JobOrdering = SteppedTaskOrdering;
 
-    fn create_ordering<G: FlowGraph>(&self, graph: G, max_jobs: usize) -> Result<Self::JobOrdering, JobOrderingError> {
+    fn create_ordering<G: FlowGraph>(
+        &self,
+        graph: G,
+        max_jobs: usize,
+    ) -> Result<Self::JobOrdering, JobOrderingError> {
         SteppedTaskOrdering::new(graph, max_jobs)
     }
 }
@@ -26,12 +30,9 @@ pub struct SteppedTaskOrdering {
 }
 
 impl JobOrdering for SteppedTaskOrdering {
-
     fn poll(&mut self) -> Result<Vec<JobId>, JobOrderingError> {
         match self.order.last_mut() {
-            None => {
-                Ok(vec![])
-            }
+            None => Ok(vec![]),
             Some(tasks) => {
                 let mut out = vec![];
                 for (task, offered) in tasks {
@@ -48,7 +49,7 @@ impl JobOrdering for SteppedTaskOrdering {
     fn offer(&mut self, task: JobId) -> Result<(), JobOrderingError> {
         debug!("{task} finished");
         for step in &mut self.order.iter_mut().rev() {
-            if let Some(idx) = step.iter().position(|(idx, _)| *idx ==task) {
+            if let Some(idx) = step.iter().position(|(idx, _)| *idx == task) {
                 step.remove(idx);
                 break;
             }
@@ -66,7 +67,7 @@ impl SteppedTaskOrdering {
     /// Attempts to create a new task ordering
     fn new<G>(flow_graph: G, w: usize) -> Result<Self, JobOrderingError>
     where
-        G:  FlowGraph,
+        G: FlowGraph,
     {
         let mut graph: DiGraph<JobId, ()> = DiGraph::new();
         let tasks: HashSet<_> = flow_graph.jobs().into_iter().collect();
@@ -74,7 +75,7 @@ impl SteppedTaskOrdering {
         for id in &tasks {
             graph.add_node(*id);
         }
-        for id  in &tasks {
+        for id in &tasks {
             let node_id = graph.node_indices().find(|idx| graph[*idx] == *id).unwrap();
             for dependency in flow_graph.dependencies(id) {
                 let dependency_id = graph
@@ -85,9 +86,9 @@ impl SteppedTaskOrdering {
             }
         }
 
-
         let toposort = toposort(&graph, None).map_err(|cycle| {
-            let cycle = job_ordering::get_cycle(&graph, cycle.node_id()).expect("failed to get a cycle");
+            let cycle =
+                job_ordering::get_cycle(&graph, cycle.node_id()).expect("failed to get a cycle");
 
             JobOrderingError::CyclicTasks {
                 cycle: cycle.iter().map(|idx| graph[*idx]).collect(),
@@ -134,18 +135,14 @@ impl SteppedTaskOrdering {
             .into_values()
             .map(|set| {
                 set.into_iter()
-                   .map(|i| (graph[toposort[i.index()]], false))
-                   .collect()
+                    .map(|i| (graph[toposort[i.index()]], false))
+                    .collect()
             })
             .collect();
         steps.reverse();
         Ok(Self { order: steps })
     }
-
-
 }
-
-
 
 /// Constructs a topological ordering of G in which the vertices are ordered lexicographically by
 /// the set of positions of their incoming neighbors.
@@ -199,7 +196,6 @@ fn lexico_topological_sort<Ix: IndexType>(
     ordering
 }
 
-
 fn incoming_edges<Ix: IndexType>(
     n: NodeIndex<Ix>,
     list: &UnweightedList<NodeIndex<Ix>>,
@@ -212,13 +208,12 @@ fn incoming_edges<Ix: IndexType>(
         .collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::action::action;
     use crate::backend::flow_backend::BackendFlowGraph;
-    use crate::backend::job::{BackendJob, InputFlavor, ReusableOutput, SingleOutput, JobError};
+    use crate::backend::job::{BackendJob, InputFlavor, JobError, ReusableOutput, SingleOutput};
 
     fn quick_task(name: &str) -> BackendJob {
         BackendJob::new(
@@ -231,10 +226,7 @@ mod tests {
 
     fn create_order(width: usize, tasks: &[BackendJob]) -> SteppedTaskOrdering {
         SteppedTaskOrderer::default()
-            .create_ordering(
-                BackendFlowGraph::new(tasks),
-                width,
-            )
+            .create_ordering(BackendFlowGraph::new(tasks), width)
             .expect("failed to create order")
     }
 
