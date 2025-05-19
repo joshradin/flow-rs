@@ -1,7 +1,7 @@
 [package]
 name = "jobflow"
 authors = ["Joshua Radin <joshradin@github.com>"]
-version = "0.1.2"
+version = "0.2.0"
 rust-version = "1.86.0"
 description = "Executes jobs in order"
 repository = "https://github.com/joshradin/jobflow"
@@ -24,7 +24,7 @@ fortuples = "0.9.1"
 [dev-dependencies]
 parking_lot = { version = "0.12.3", features = ["deadlock_detection"] }
 test-log = { version = "0.2.17", features = ["trace"] }
-criterion = "0.5.1"
+criterion = "0.6.0"
 tracing-subscriber = "0.3.19"
 indicatif = "0.17.11"
 

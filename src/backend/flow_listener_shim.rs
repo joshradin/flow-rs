@@ -6,19 +6,19 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 pub struct FlowListenerShim {
-    flow_listeners: Arc<Mutex<Vec<Box<dyn FlowListener + Send + Sync>>>>,
+    flow_listeners: Arc<Mutex<Vec<Box<dyn FlowListener + Send>>>>,
 }
 
 impl FlowListenerShim {
-    pub fn new(flow_listeners: &Arc<Mutex<Vec<Box<dyn FlowListener + Send + Sync>>>>) -> Self {
+    pub fn new(flow_listeners: &Arc<Mutex<Vec<Box<dyn FlowListener + Send>>>>) -> Self {
         Self {
             flow_listeners: flow_listeners.clone(),
         }
     }
 }
 
-impl FromIterator<Box<dyn FlowListener + Send + Sync>> for FlowListenerShim {
-    fn from_iter<T: IntoIterator<Item = Box<dyn FlowListener + Send + Sync>>>(iter: T) -> Self {
+impl FromIterator<Box<dyn FlowListener + Send>> for FlowListenerShim {
+    fn from_iter<T: IntoIterator<Item = Box<dyn FlowListener + Send>>>(iter: T) -> Self {
         Self {
             flow_listeners: Arc::new(Mutex::new(iter.into_iter().collect())),
         }

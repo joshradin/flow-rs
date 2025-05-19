@@ -1,7 +1,5 @@
 use jobflow::job_ordering::JobOrderer;
 use jobflow::{DependsOn, Flow, FlowError, JobId, JobRef};
-use std::thread;
-use std::time::Duration;
 
 static PROJECTS: &[&str] = &[
     "base",

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 pub struct Reusable<'lf, T, P = BoxPromise<'lf, T>>
 where
-    T: Send + Sync + 'lf,
+    T: Send + 'lf,
     P: Promise<Output = T> + 'lf,
 {
     state: Arc<Mutex<ReusableState<'lf, T, P>>>,
@@ -18,7 +18,7 @@ where
 
 impl<'lf, T, P> Clone for Reusable<'lf, T, P>
 where
-    T: Send + Sync + 'lf,
+    T: Send + 'lf,
     P: Promise<Output = T> + 'lf,
 {
     fn clone(&self) -> Self {
@@ -31,7 +31,7 @@ where
 
 impl<'lf, T, P> Debug for Reusable<'lf, T, P>
 where
-    T: Send + Sync + 'lf,
+    T: Send + 'lf,
     P: Promise<Output = T> + 'lf,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -41,16 +41,16 @@ where
 
 enum ReusableState<'lf, T: 'lf, P: Promise<Output = T> + 'lf>
 where
-    T: Send + Sync + 'lf,
+    T: Send + 'lf,
     P: Promise<Output = T> + 'lf,
 {
-    Init(P, PhantomData<&'lf T>),
+    Init(P, PhantomData<&'lf ()>),
     Data(T),
 }
 
 impl<'lf, T: 'lf, P: Promise<Output = T> + 'lf> Reusable<'lf, T, P>
 where
-    T: Send + Sync + 'lf,
+    T: Send + 'lf,
     P: Promise<Output = T> + 'lf,
 {
     pub fn new(promise: P) -> Self
@@ -104,10 +104,10 @@ where
     }
 }
 
-impl<'lf, T: Send + Sync + 'lf, P: Promise<Output = T> + 'lf> crate::promise::IntoPromise
+impl<'lf, T, P> crate::promise::IntoPromise
     for Reusable<'lf, T, P>
 where
-    T: Send + Sync + 'lf,
+    T: Send  + 'lf,
     P: Promise<Output = T> + 'lf,
 {
     type Output = T;
@@ -121,12 +121,12 @@ where
 /// The reusable promise
 pub struct IntoPromise<'lf, T, P: Promise<Output = T> + 'lf>
 where
-    T: Send + Sync + 'lf,
+    T: Send + 'lf,
 {
     inner: Reusable<'lf, T, P>,
 }
 
-impl<'lf, T: Send + Sync + 'lf, P: Promise<Output = T> + 'lf> Promise for IntoPromise<'lf, T, P> {
+impl<'lf, T: Send + 'lf, P: Promise<Output = T> + 'lf> Promise for IntoPromise<'lf, T, P> {
     type Output = T;
 
     fn poll(&mut self) -> PollPromise<Self::Output> {

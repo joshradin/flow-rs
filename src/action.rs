@@ -38,18 +38,22 @@ pub trait Action: Send {
     }
 }
 
+/// An action with no input or output
 pub trait Runnable: Action<Input = (), Output = ()> + Sized {
     fn run(&mut self) {
         self.apply(());
     }
 }
 impl<A: Action<Input = (), Output = ()>> Runnable for A {}
+
+/// An action which only consumes an input
 pub trait Consumer<T: Send>: Action<Input = T, Output = ()> + Sized {
     fn accept(&mut self, t: T) {
         self.apply(t);
     }
 }
 impl<T: Send, A: Action<Input = T, Output = ()>> Consumer<T> for A {}
+/// An action which supplies some value
 pub trait Supplier<T: Send>: Action<Input = (), Output = T> + Sized {
     fn get(&mut self) -> T {
         self.apply(())
@@ -225,6 +229,9 @@ impl<A: Action> IntoAction<A::Input, A::Output, ()> for A {
     }
 }
 
+
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +251,7 @@ mod tests {
         }
         assert_eq!(action(square).apply(1), 1);
     }
+
 
     #[test]
     fn test_map_action() {
