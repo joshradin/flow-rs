@@ -104,10 +104,9 @@ where
     }
 }
 
-impl<'lf, T, P> crate::promise::IntoPromise
-    for Reusable<'lf, T, P>
+impl<'lf, T, P> crate::promise::IntoPromise for Reusable<'lf, T, P>
 where
-    T: Send  + 'lf,
+    T: Send + 'lf,
     P: Promise<Output = T> + 'lf,
 {
     type Output = T;

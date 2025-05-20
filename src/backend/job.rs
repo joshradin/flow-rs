@@ -78,7 +78,7 @@ impl BackendJob {
     ) -> BackendJob
     where
         I: Send + 'static,
-        O: Send  + 'static,
+        O: Send + 'static,
         A: Action<Input = I, Output = O> + 'static,
     {
         let id = JobId::new();

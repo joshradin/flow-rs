@@ -229,9 +229,6 @@ impl<A: Action> IntoAction<A::Input, A::Output, ()> for A {
     }
 }
 
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,7 +248,6 @@ mod tests {
         }
         assert_eq!(action(square).apply(1), 1);
     }
-
 
     #[test]
     fn test_map_action() {
