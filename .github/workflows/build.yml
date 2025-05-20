@@ -20,7 +20,7 @@ env:
 name: build
 jobs:
   build-dev:
-    runs-on: arc-runner
+    runs-on: ubuntu
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -37,7 +37,7 @@ jobs:
       - name: Build dev
         run: cargo build --workspace --all-features
   check:
-    runs-on: arc-runner
+    runs-on: ubuntu
     needs: [ build-dev ]
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +50,7 @@ jobs:
         run: sudo apt-get update; sudo apt-get install --no-install-recommends -y $EXTERNAL_DEPENDENCIES
       - run: cargo check --all-features --workspace
   semver-check:
-    runs-on: arc-runner
+    runs-on: ubuntu
     needs: [ build-dev ]
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +58,7 @@ jobs:
         uses: obi1kenobi/cargo-semver-checks-action@v2
 
   unit-test:
-    runs-on: arc-runner
+    runs-on: ubuntu
     needs: [ build-dev, check ]
     permissions: write-all
     steps:
@@ -90,7 +90,7 @@ jobs:
   integration-test:
     needs: [ build-dev, unit-test ]
     permissions: write-all
-    runs-on: arc-runner
+    runs-on: ubuntu
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -120,7 +120,7 @@ jobs:
   fmt:
     needs: [ check ]
     permissions: write-all
-    runs-on: arc-runner
+    runs-on: ubuntu
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -137,7 +137,7 @@ jobs:
   clippy:
     needs: [ fmt ]
     permissions: write-all
-    runs-on: arc-runner
+    runs-on: ubuntu
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
