@@ -55,6 +55,7 @@ pub mod job_ordering;
 pub mod listener;
 mod pool;
 pub mod promise;
+pub mod job;
 
 pub use backend::job::{InputFlavor, JobError, JobId};
 pub use flow::*;

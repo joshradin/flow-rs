@@ -1,4 +1,4 @@
-use crate::actions::{Action, IntoAction};
+use crate::actions::IntoAction;
 use crate::backend::flow_backend::{FlowBackend, FlowBackendError};
 use crate::backend::flow_listener_shim::FlowListenerShim;
 use crate::backend::job::{BackendJob, JobError, JobId, SingleOutput, TypedOutput};

@@ -1,4 +1,4 @@
-use crate::actions::{FnAction, action};
+use crate::actions::FnAction;
 use crate::backend::job::InputFlavor;
 use std::marker::PhantomData;
 
@@ -176,6 +176,7 @@ pub trait IntoAction<In, Out, Marker>: Sized {
     fn into_action(self) -> Self::Action;
 }
 
+#[doc(hidden)]
 pub struct ProducerIntoAction<R>(PhantomData<R>);
 impl<R: Send + 'static, F: FnMut() -> R + Send + 'static> IntoAction<(), R, ProducerIntoAction<R>>
     for F
@@ -187,6 +188,7 @@ impl<R: Send + 'static, F: FnMut() -> R + Send + 'static> IntoAction<(), R, Prod
     }
 }
 
+#[doc(hidden)]
 pub struct FunctionIntoAction<T, R>(PhantomData<(T, R)>);
 impl<T: Send + 'static, R: Send + 'static, F: FnMut(T) -> R + Send + 'static>
     IntoAction<T, R, FunctionIntoAction<T, R>> for F
