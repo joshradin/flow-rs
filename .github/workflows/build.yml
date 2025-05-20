@@ -28,9 +28,6 @@ jobs:
       - name: Install Dependencies
         run: sudo apt-get update; sudo apt-get install --no-install-recommends -y $EXTERNAL_DEPENDENCIES
       - uses: rui314/setup-mold@v1
-      - name: Install binary dependencies
-        run: |
-          cargo install cargo-nextest
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: dev
