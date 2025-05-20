@@ -450,7 +450,7 @@ impl FlowGraph for BackendFlowGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::action;
+    use crate::actions::action;
     use crate::backend::job::test_fixtures::MockTaskInput;
     use crate::backend::job::{InputFlavor, ReusableOutput, SingleOutput};
     use test_log::test;
@@ -477,15 +477,9 @@ mod tests {
 
     fn create_backend() -> FlowBackend {
         let mut backend = FlowBackend::default();
-        let mut task1 = BackendJob::new(
-            "task1",
-            InputFlavor::Single,
-            ReusableOutput::new(),
-            action(|i: i32| i * i),
-        );
+        let mut task1 = BackendJob::new("task1", ReusableOutput::new(), action(|i: i32| i * i));
         let mut task2 = BackendJob::new(
             "task2",
-            InputFlavor::Single,
             SingleOutput::new(),
             action(|i: i32| {
                 println!("task2: {}", i);
@@ -494,7 +488,6 @@ mod tests {
         );
         let mut task3 = BackendJob::new(
             "task3",
-            InputFlavor::Single,
             SingleOutput::new(),
             action(|i: i32| {
                 println!("task3: {}", i);

@@ -1,4 +1,4 @@
-use crate::action::IntoAction;
+use crate::actions::{Action, IntoAction};
 use crate::backend::flow_backend::{FlowBackend, FlowBackendError};
 use crate::backend::flow_listener_shim::FlowListenerShim;
 use crate::backend::job::{BackendJob, JobError, JobId, SingleOutput, TypedOutput};
@@ -161,8 +161,8 @@ impl<I: Send + 'static, O: Send + 'static, T: JobOrderer> Flow<I, O, T> {
         AO: Send + 'static,
         A::Action: 'static,
     {
-        let (input_flavor, action) = step.into_action();
-        let bk = BackendJob::new::<_, AI, AO>(name, input_flavor, SingleOutput::new(), action);
+        let action = step.into_action();
+        let bk = BackendJob::new::<_, AI, AO>(name, SingleOutput::new(), action);
         self.nicknames.insert(bk.nickname().to_string(), bk.id());
         let s = JobReference::<AI, AO, T>::new(&bk, &self.backend);
         self.backend.write().add(bk);
