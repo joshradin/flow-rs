@@ -1,4 +1,4 @@
-use jobflow::action::action;
+use jobflow::actions::action;
 use jobflow::job_ordering::{GraphTraversalTaskOrderer, JobOrderer};
 use jobflow::*;
 use test_log::test;

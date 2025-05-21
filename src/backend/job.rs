@@ -1,6 +1,6 @@
 //! A task within the backend
 
-use crate::action::{Action, BoxAction, Runnable, action};
+use crate::actions::{Action, BoxAction, Runnable, action};
 use crate::backend::flow_backend::{FlowBackendError, FlowBackendInput};
 use crate::backend::funnel::BackendFunnel;
 use crate::backend::job::private::Sealed;
@@ -72,7 +72,6 @@ impl Debug for BackendJob {
 impl BackendJob {
     pub fn new<A, I, O>(
         name: impl AsRef<str>,
-        input: InputFlavor,
         output: impl AsOutputFlavor<Data = O>,
         action: A,
     ) -> BackendJob
@@ -82,6 +81,7 @@ impl BackendJob {
         A: Action<Input = I, Output = O> + 'static,
     {
         let id = JobId::new();
+        let input = action.input_flavor();
         let nickname = name.as_ref().to_owned();
         let (input_sender, input_receiver) = bounded::<Data>(1);
         let (output_sender, output_receiver) = bounded::<Data>(1);
@@ -95,7 +95,7 @@ impl BackendJob {
                     input
                 );
                 let mut action = action;
-                let safe_action = crate::action::action(move |_: ()| -> O {
+                let safe_action = crate::actions::action(move |_: ()| -> O {
                     let fake = unsafe {
                         assert_eq!(size_of::<I>(), 0, "input must have zero size");
                         let fake: I = std::mem::zeroed();
@@ -276,6 +276,10 @@ impl<T: Send + 'static> Action for ReceiveInputAction<T> {
 
         *i
     }
+
+    fn input_flavor(&self) -> InputFlavor {
+        InputFlavor::None
+    }
 }
 
 struct ReceiveFunnelInputAction<T, I: FromIterator<T>> {
@@ -318,6 +322,10 @@ impl<T: Send + 'static, I: 'static + FromIterator<T> + Send> Action
             .collect::<I>();
         self.sender.send(Box::new(rebuilt) as Data).unwrap();
     }
+
+    fn input_flavor(&self) -> InputFlavor {
+        InputFlavor::None
+    }
 }
 
 struct SendOutputAction<T> {
@@ -342,10 +350,14 @@ impl<T: Send + 'static> Action for SendOutputAction<T> {
         let data = Box::new(input) as Data;
         self.sender.send(data).expect("failed to send data");
     }
+
+    fn input_flavor(&self) -> InputFlavor {
+        InputFlavor::Single
+    }
 }
 
 /// Input flavor for this task
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum InputFlavor {
     None,
     Single,
@@ -947,7 +959,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::action;
+    use crate::actions::action;
     use crate::backend::flow_backend::FlowBackendOutput;
     use crate::backend::job::test_fixtures::MockTaskInput;
     use crate::promise::GetPromise;
@@ -963,7 +975,6 @@ mod tests {
     fn test_create_task() {
         let mut task = BackendJob::new(
             "task",
-            InputFlavor::Single,
             SingleOutput::new(),
             action(|i: i32| {
                 println!("{}", i);
@@ -981,9 +992,8 @@ mod tests {
         let (tx, rx) = bounded::<&str>(1);
         let mut task = BackendJob::new(
             "task",
-            InputFlavor::None,
             SingleOutput::new(),
-            action(move |_: ()| {
+            action(move || {
                 tx.send("Hello, world").expect("failed to send input");
             }),
         );
@@ -997,7 +1007,6 @@ mod tests {
         let mut input = FlowBackendInput::default();
         let mut task = BackendJob::new(
             "task",
-            InputFlavor::Single,
             SingleOutput::new(),
             action(move |i: i32| {
                 assert_eq!(i, 32);
@@ -1013,12 +1022,7 @@ mod tests {
     #[test]
     fn test_flow_output_from_task() {
         let mut output = FlowBackendOutput::default();
-        let mut task = BackendJob::new(
-            "task",
-            InputFlavor::None,
-            SingleOutput::new(),
-            action(move |_: ()| 32_i32),
-        );
+        let mut task = BackendJob::new("task", SingleOutput::new(), action(move || 32_i32));
         output
             .set_source(task.output_mut())
             .expect("failed to set output");
@@ -1032,27 +1036,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn test_no_input_task_with_input_fails() {
-        let _task = BackendJob::new(
-            "task",
-            InputFlavor::None,
-            SingleOutput::new(),
-            action(move |_: isize| {}),
-        );
-    }
-
-    #[test]
     fn test_chain_task() {
-        let mut task1 = BackendJob::new(
-            "task1",
-            InputFlavor::Single,
-            SingleOutput::new(),
-            action(|i: i32| i * i),
-        );
+        let mut task1 = BackendJob::new("task1", SingleOutput::new(), action(|i: i32| i * i));
         let mut task2 = BackendJob::new(
             "task2",
-            InputFlavor::Single,
             SingleOutput::new(),
             action(|i: i32| {
                 println!("{}", i);
@@ -1077,21 +1064,10 @@ mod tests {
 
     #[test]
     fn test_funnel_task() {
-        let mut task1 = BackendJob::new(
-            "task1",
-            InputFlavor::Single,
-            SingleOutput::new(),
-            action(|i: i32| i * i),
-        );
-        let mut task2 = BackendJob::new(
-            "task2",
-            InputFlavor::Single,
-            SingleOutput::new(),
-            action(|i: i32| i * i * i),
-        );
+        let mut task1 = BackendJob::new("task1", SingleOutput::new(), action(|i: i32| i * i));
+        let mut task2 = BackendJob::new("task2", SingleOutput::new(), action(|i: i32| i * i * i));
         let mut task3 = BackendJob::new(
             "task3",
-            InputFlavor::Single,
             SingleOutput::new(),
             action(|i: Vec<i32>| {
                 assert_eq!(i, [9, 27]);

@@ -5,7 +5,7 @@
 //!
 //! ## Jobs and Flows
 //! A flow is composed of many jobs. Jobs are meant to be a form of atomic operations. The users
-//! can create a job by giving it a name and assigning an [`Action`](action::Action) to it. When using
+//! can create a job by giving it a name and assigning an [`Action`](actions::Action) to it. When using
 //! [`Flow::create`] users can directly use any function of either signature `FnOnce() -> R` or `FnOnce(T) -> R`.
 //! If using the former signature, attempting to set an input for this task will return an error.
 //!
@@ -48,14 +48,15 @@
 //! assert_eq!(sum, 75);
 //! ```
 
-pub mod action;
+pub mod actions;
 pub(crate) mod backend;
 mod flow;
+pub mod job;
 pub mod job_ordering;
 pub mod listener;
 mod pool;
 pub mod promise;
 
-pub use backend::job::{JobError, JobId};
+pub use backend::job::{InputFlavor, JobError, JobId};
 pub use flow::*;
 pub use pool::FlowThreadPool;

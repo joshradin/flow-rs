@@ -1,5 +1,4 @@
-//! Actions maps an input to an output
-
+use crate::actions::FnAction;
 use crate::backend::job::InputFlavor;
 use std::marker::PhantomData;
 
@@ -10,6 +9,8 @@ pub trait Action: Send {
 
     /// Runs this step
     fn apply(&mut self, input: Self::Input) -> Self::Output;
+
+    fn input_flavor(&self) -> InputFlavor;
 
     /// Maps the output of this flow
     fn map<U, F>(self, f: F) -> Map<Self, U, F>
@@ -74,6 +75,10 @@ where
     fn apply(&mut self, input: Self::Input) -> Self::Output {
         (**self).apply(input)
     }
+
+    fn input_flavor(&self) -> InputFlavor {
+        (**self).input_flavor()
+    }
 }
 
 /// A step that maps the output of an inner
@@ -95,6 +100,10 @@ impl<F: Action, U: Send, M: FnMut(F::Output) -> U + Send> Action for Map<F, U, M
     fn apply(&mut self, input: Self::Input) -> Self::Output {
         let mid = self.flow.apply(input);
         (self.map)(mid)
+    }
+
+    fn input_flavor(&self) -> InputFlavor {
+        self.flow.input_flavor()
     }
 }
 
@@ -120,43 +129,9 @@ where
         let mid = self.flow1.apply(input);
         self.flow2.apply(mid)
     }
-}
 
-/// A flow based on a function
-pub struct FnAction<I, O, F>
-where
-    I: Send,
-    O: Send,
-    F: FnMut(I) -> O + Send,
-{
-    f: F,
-    _marker: PhantomData<(I, O)>,
-}
-
-impl<I, O, F> Action for FnAction<I, O, F>
-where
-    I: Send,
-    O: Send,
-    F: FnMut(I) -> O + Send,
-{
-    type Input = I;
-    type Output = O;
-
-    fn apply(&mut self, input: Self::Input) -> Self::Output {
-        (self.f)(input)
-    }
-}
-
-/// Creates an action from a function
-pub fn action<I, O, F>(f: F) -> FnAction<I, O, F>
-where
-    I: Send,
-    O: Send,
-    F: FnMut(I) -> O + Send,
-{
-    FnAction {
-        f,
-        _marker: PhantomData,
+    fn input_flavor(&self) -> InputFlavor {
+        self.flow1.input_flavor()
     }
 }
 
@@ -167,6 +142,7 @@ where
     O: Send,
     F: FnOnce(I) -> O + Send,
 {
+    input_flavor: InputFlavor,
     f: Option<F>,
     _marker: PhantomData<(I, O)>,
 }
@@ -188,92 +164,46 @@ where
             Some(f) => f(input),
         }
     }
+
+    fn input_flavor(&self) -> InputFlavor {
+        self.input_flavor
+    }
 }
 
 pub trait IntoAction<In, Out, Marker>: Sized {
     type Action: Action<Input = In, Output = Out>;
 
-    fn into_action(self) -> (InputFlavor, Self::Action);
+    fn into_action(self) -> Self::Action;
 }
 
+#[doc(hidden)]
 pub struct ProducerIntoAction<R>(PhantomData<R>);
 impl<R: Send + 'static, F: FnMut() -> R + Send + 'static> IntoAction<(), R, ProducerIntoAction<R>>
     for F
 {
-    type Action = BoxAction<'static, (), R>;
+    type Action = FnAction<(), R, Box<dyn FnMut(()) -> R + Send>>;
 
-    fn into_action(mut self) -> (InputFlavor, Self::Action) {
-        (
-            InputFlavor::None,
-            Box::new(action(move |_: ()| self())) as BoxAction<'static, (), R>,
-        )
+    fn into_action(mut self) -> Self::Action {
+        FnAction::new(InputFlavor::None, Box::new(move |_: ()| self()))
     }
 }
 
+#[doc(hidden)]
 pub struct FunctionIntoAction<T, R>(PhantomData<(T, R)>);
 impl<T: Send + 'static, R: Send + 'static, F: FnMut(T) -> R + Send + 'static>
     IntoAction<T, R, FunctionIntoAction<T, R>> for F
 {
     type Action = FnAction<T, R, F>;
 
-    fn into_action(self) -> (InputFlavor, Self::Action) {
-        (InputFlavor::Single, action(self))
+    fn into_action(self) -> Self::Action {
+        FnAction::new(InputFlavor::Single, self)
     }
 }
 
 impl<A: Action> IntoAction<A::Input, A::Output, ()> for A {
     type Action = A;
 
-    fn into_action(self) -> (InputFlavor, Self::Action) {
-        (InputFlavor::Single, self)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_closure_action() {
-        let mut action = action(|i: i32| i * i);
-        assert_eq!(action.apply(1), 1);
-        assert_eq!(action.apply(2), 4);
-    }
-
-    #[test]
-    fn test_fn_action() {
-        #[inline]
-        fn square(i: i32) -> i32 {
-            i * i
-        }
-        assert_eq!(action(square).apply(1), 1);
-    }
-
-    #[test]
-    fn test_map_action() {
-        let mut action = action(|i: i32| i).map(|i| i * i);
-        assert_eq!(action.apply(1), 1);
-        assert_eq!(action.apply(2), 4);
-    }
-
-    #[test]
-    fn test_chain_action() {
-        let mut action = action(|i: i32| i).chain(action(|i| i * i));
-        assert_eq!(action.apply(1), 1);
-        assert_eq!(action.apply(2), 4);
-    }
-
-    #[test]
-    fn test_box_action() {
-        let mut action: BoxAction<i32, i32> =
-            Box::new(Box::new(action(|i: i32| i)).chain(action(|i| i * i)));
-        assert_eq!(action.apply(1), 1);
-        assert_eq!(action.apply(2), 4);
-    }
-
-    #[test]
-    fn test_into_action() {
-        let (_, mut io_action) = (|i: i32| i * i).into_action();
-        let v = io_action.apply(123);
+    fn into_action(self) -> Self::Action {
+        self
     }
 }

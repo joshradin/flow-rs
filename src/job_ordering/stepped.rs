@@ -211,17 +211,12 @@ fn incoming_edges<Ix: IndexType>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::action;
+    use crate::actions::action;
     use crate::backend::flow_backend::BackendFlowGraph;
     use crate::backend::job::{BackendJob, InputFlavor, JobError, ReusableOutput, SingleOutput};
 
     fn quick_task(name: &str) -> BackendJob {
-        BackendJob::new(
-            name,
-            InputFlavor::Single,
-            ReusableOutput::new(),
-            action(|_: ()| {}),
-        )
+        BackendJob::new(name, ReusableOutput::new(), action(|_: ()| {}))
     }
 
     fn create_order(width: usize, tasks: &[BackendJob]) -> SteppedTaskOrdering {
@@ -232,12 +227,7 @@ mod tests {
 
     #[test]
     fn test_make_reusable() {
-        let mut b = BackendJob::new(
-            "test",
-            InputFlavor::None,
-            SingleOutput::new(),
-            action(|_: ()| "hello"),
-        );
+        let mut b = BackendJob::new("test", SingleOutput::new(), action(|_: ()| "hello"));
         assert!(matches!(
             b.output_mut().make_reusable::<isize>(),
             Err(JobError::UnexpectedType { .. })
