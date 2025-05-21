@@ -5,7 +5,7 @@ use test_log::test;
 mod gradle_like;
 
 #[test]
-fn default() -> Result<(), FlowError> {
+fn gradle_like_default() -> Result<(), FlowError> {
     let mut flow = FlowBuilder::new().build();
 
     gradle_like::create_flow(&mut flow)?;

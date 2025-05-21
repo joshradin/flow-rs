@@ -36,7 +36,7 @@
 //! ### Multiple tasks can flow into a single task
 //! Multiple tasks can be used an input into a single task using a funnel. As long as the input
 //! of the action is something that implements `FromIterator<T>` and `IntoIterator<Item=T>`
-//! ```
+//! ```rust
 //! use jobflow::{Flow, FlowsInto};
 //! let mut flow = Flow::new();
 //! let funnel = flow.create("sum", |i: Vec<i32>| { i.iter().sum::<i32>()}).funnelled().unwrap();

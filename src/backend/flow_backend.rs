@@ -140,7 +140,9 @@ impl<T: JobOrderer, P: WorkerPool> FlowBackend<T, P> {
 
     /// Executes this flow
     pub fn execute(&mut self) -> Result<(), FlowBackendError> {
-        let result = error_span!("execute").in_scope(|| {
+        let result = (|| {
+            let span = error_span!("execute");
+            let _enter = span.enter();
             self.listeners.iter().for_each(|i| i.lock().started());
             debug!(
                 "Calculating task ordering for {} tasks...",
@@ -156,8 +158,11 @@ impl<T: JobOrderer, P: WorkerPool> FlowBackend<T, P> {
 
             let mut step: usize = 1;
             let mut open_tasks = BinaryHeap::<Weighted<JobId>>::new();
+            let mut tasks_completed = 0;
+            let mut tasks_running = 0;
 
             trace!("starting task execution");
+
             while !ordering.empty() {
                 let newly_ready = ordering.poll()?;
                 let new_adds = !newly_ready.is_empty();
@@ -170,7 +175,7 @@ impl<T: JobOrderer, P: WorkerPool> FlowBackend<T, P> {
                     });
                 }
 
-                let max = self.worker_pool.max_size() - self.worker_pool.active();
+                let max = self.worker_pool.max_size() - self.worker_pool.running();
 
                 let len = open_tasks.len();
                 let to_drain = max.min(len);
@@ -183,7 +188,8 @@ impl<T: JobOrderer, P: WorkerPool> FlowBackend<T, P> {
                 };
 
                 for task_id in batch {
-                    trace!("sending  task {}", task_id);
+                    trace!("sending task {}", task_id);
+                    tasks_running += 1;
                     let mut task = self.tasks.remove(&task_id).expect("Task not found");
                     let name = task.nickname().to_string();
                     let listeners = listeners.clone();
@@ -212,7 +218,9 @@ impl<T: JobOrderer, P: WorkerPool> FlowBackend<T, P> {
                             break;
                         }
                         Some(PollPromise::Ready((done, name, result))) => {
-                            debug!("Task {:?} finished: {:?}", name, result);
+                            tasks_completed += 1;
+                            tasks_running -= 1;
+                            debug!(tasks_completed=%tasks_completed, name=name, result=?result, "Task {:?} finished", done);
                             if let Err(e) = result {
                                 return Err(FlowBackendError::TaskError {
                                     id: done,
@@ -221,6 +229,7 @@ impl<T: JobOrderer, P: WorkerPool> FlowBackend<T, P> {
                                 });
                             }
                             any_finished = true;
+
                             ordering.offer(done)?;
                         }
                     }
@@ -232,11 +241,19 @@ impl<T: JobOrderer, P: WorkerPool> FlowBackend<T, P> {
                     } else {
                         step = next;
                     }
+                    debug!(
+                        running = tasks_running,
+                        completed = tasks_completed,
+                        waiting = open_tasks.len(),
+                        "incremented step because (task finished: {} || new ads: {})",
+                        any_finished,
+                        new_adds
+                    );
                 }
             }
 
             Ok(())
-        });
+        })();
         self.listeners.iter().for_each(|i| {
             i.lock().finished(result.as_ref().map(|_| ()));
         });

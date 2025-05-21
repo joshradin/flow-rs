@@ -18,7 +18,10 @@ mod settings;
 pub trait WorkerPool {
     fn max_size(&self) -> usize;
 
+    /// Active threads
     fn active(&self) -> usize;
+    /// Running threads (have tasks)
+    fn running(&self) -> usize;
 
     /// Submits some work into the worker pool
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
@@ -67,6 +70,10 @@ impl WorkerPool for FlowThreadPool {
         self.inner.active()
     }
 
+    fn running(&self) -> usize {
+        self.inner.running()
+    }
+
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
         f: F,
@@ -104,6 +111,7 @@ mod tests {
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
+    use std::thread::yield_now;
     use tracing::{info, info_span};
 
     #[test]
@@ -144,6 +152,32 @@ mod tests {
             .into_iter()
             .collect::<Vec<_>>();
         assert_eq!(count.load(Ordering::SeqCst), 128);
+    }
+
+    #[test]
+    fn test_thread_pool_counts() {
+        let thread_pool = FlowThreadPool::new(1, 1, Duration::ZERO);
+        assert_eq!(thread_pool.running(), 0);
+        assert_eq!(thread_pool.active(), 0);
+        let barrier = Arc::new(Barrier::new(2));
+        let promise = thread_pool.submit({
+            let barrier = barrier.clone();
+            move || {
+                barrier.wait();
+            }
+        });
+        while thread_pool.running() < 1 {
+            yield_now()
+        }
+        assert_eq!(thread_pool.running(), 1);
+        assert_eq!(thread_pool.active(), 1);
+        barrier.wait();
+        promise.get();
+        while thread_pool.running() > 0 {
+            yield_now()
+        }
+        assert_eq!(thread_pool.running(), 0);
+        assert_eq!(thread_pool.active(), 1);
     }
 
     #[test]
