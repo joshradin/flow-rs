@@ -1,4 +1,5 @@
 use jobflow::Flow;
+use test_log::test;
 
 #[test]
 fn empty_flow() {

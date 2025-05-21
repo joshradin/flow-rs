@@ -9,7 +9,7 @@ use test_log::test;
 mod gradle_like;
 
 #[test]
-fn graph() -> Result<(), FlowError> {
+fn gradle_like_graph() -> Result<(), FlowError> {
     let mut flow = FlowBuilder::new()
         .with_task_orderer(GraphTraversalTaskOrderer)
         .with_thread_pool(FlowThreadPool::new(1, 7, Duration::ZERO))

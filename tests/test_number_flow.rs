@@ -7,7 +7,7 @@ use tracing::info;
 /// This example flow will first accept a list of integer, get the square of all of the integers,
 /// then sum that. Finally, it will return a list of all the integers with the sum added to each.
 #[test]
-fn test_stepped() -> Result<(), FlowError> {
+fn number_flow_stepped() -> Result<(), FlowError> {
     let mut flow = FlowBuilder::new().build();
 
     let test_data = Vec::from_iter(0..32);
@@ -28,7 +28,7 @@ fn test_stepped() -> Result<(), FlowError> {
 /// This example flow will first accept a list of integer, get the square of all of the integers,
 /// then sum that. Finally, it will return a list of all the integers with the sum added to each.
 #[test]
-fn test_graph() -> Result<(), FlowError> {
+fn number_flow_graph() -> Result<(), FlowError> {
     let mut flow = FlowBuilder::new()
         .with_task_orderer(GraphTraversalTaskOrderer)
         .build();
