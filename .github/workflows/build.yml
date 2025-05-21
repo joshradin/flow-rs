@@ -70,9 +70,8 @@ jobs:
           shared-key: dev
           cache-all-crates: true
           save-if: 'false'
-      - name: Install binary dependencies
-        run: |
-          cargo install cargo-nextest
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --all-features --profile ci-unit -E 'kind(bin) + kind(lib)'
         name: Run unit tests
       - name: Test Report
@@ -99,9 +98,8 @@ jobs:
         with:
           shared-key: dev
           save-if: 'false'
-      - name: Install binary dependencies
-        run: |
-          cargo install cargo-nextest
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --all-features --profile ci-int -E 'kind(test)'
         name: Run integration tests
       - name: Test Report
