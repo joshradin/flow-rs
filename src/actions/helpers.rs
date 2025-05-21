@@ -113,7 +113,7 @@ where
         ActionWithState {
             input_flavor: InputFlavor::None,
             state,
-            f: f as BoxedStatefulActionFn<T, (), O> ,
+            f: f as BoxedStatefulActionFn<T, (), O>,
             _marker: Default::default(),
         }
     }
@@ -132,7 +132,7 @@ where
         ActionWithState {
             input_flavor: InputFlavor::Single,
             state,
-            f: f as BoxedStatefulActionFn<T, I, O> ,
+            f: f as BoxedStatefulActionFn<T, I, O>,
             _marker: Default::default(),
         }
     }
