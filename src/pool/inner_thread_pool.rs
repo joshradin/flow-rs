@@ -98,8 +98,18 @@ impl InnerThreadPool {
         })
     }
 
+    /// Currently alive workers
     pub fn active(&self) -> usize {
         self.active_workers.load(Relaxed)
+    }
+
+    /// Workers that are running
+    pub fn running(&self) -> usize {
+        self.handles
+            .lock()
+            .iter()
+            .filter(|handle| handle.state.load() == WorkerThreadState::Running)
+            .count()
     }
 
     fn spawn_worker_if_needed(self: &Arc<Self>) -> io::Result<()> {
@@ -223,7 +233,7 @@ impl WorkerThread {
         Ok(WorkerThreadHandle {
             id,
             _join_handle: join_handle,
-            _state: state,
+            state,
             cont,
         })
     }
@@ -341,7 +351,7 @@ impl WorkerThread {
 struct WorkerThreadHandle {
     id: WorkerThreadId,
     _join_handle: JoinHandle<()>,
-    _state: Arc<AtomicCell<WorkerThreadState>>,
+    state: Arc<AtomicCell<WorkerThreadState>>,
     cont: Arc<AtomicBool>,
 }
 

@@ -82,7 +82,7 @@ impl FlowBuilder<(), (), ()> {}
 pub struct Flow<I: Send = (), O: Send = (), T: JobOrderer = DefaultTaskOrderer> {
     _marker: PhantomData<fn(I) -> O>,
     nicknames: HashMap<String, JobId>,
-    listeners: Vec<Box<dyn FlowListener + Send + Sync>>,
+    listeners: Vec<Box<dyn FlowListener + Send>>,
     backend: StrongFlowBackend<T>,
 }
 
@@ -113,7 +113,7 @@ impl<I: Send, O: Send> Flow<I, O> {
     }
 }
 
-impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: JobOrderer> Flow<I, O, T> {
+impl<I: Send + 'static, O: Send + 'static, T: JobOrderer> Flow<I, O, T> {
     /// Gets a representation of the input of a flow
     pub fn input(&self) -> FlowInput<I, T> {
         FlowInput::new(&self.backend)
@@ -157,8 +157,8 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: JobOrderer> Flow<I, 
         step: A,
     ) -> JobReference<AI, AO, T>
     where
-        AI: Send + Sync + 'static,
-        AO: Send + Sync + 'static,
+        AI: Send + 'static,
+        AO: Send + 'static,
         A::Action: 'static,
     {
         let (input_flavor, action) = step.into_action();
@@ -183,7 +183,7 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: JobOrderer> Flow<I, 
     /// Add a [`FlowListener`] to this flow
     pub fn add_listener<L>(&mut self, listener: L)
     where
-        L: FlowListener + Send + Sync + 'static,
+        L: FlowListener + Send + 'static,
     {
         self.listeners.push(Box::new(listener));
     }
@@ -238,7 +238,7 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static, T: JobOrderer> Flow<I, 
     }
 }
 
-impl<O: Send + Sync + 'static, TO: JobOrderer> Flow<(), O, TO> {
+impl<O: Send + 'static, TO: JobOrderer> Flow<(), O, TO> {
     /// Gets the end result of this flow
     #[inline]
     pub fn get(self) -> Result<O, FlowError> {
@@ -246,7 +246,7 @@ impl<O: Send + Sync + 'static, TO: JobOrderer> Flow<(), O, TO> {
     }
 }
 
-impl<I: Send + Sync + 'static, TO: JobOrderer> Flow<I, (), TO> {
+impl<I: Send + 'static, TO: JobOrderer> Flow<I, (), TO> {
     /// Runs this flow with the given input
     #[inline]
     pub fn accept(self, i: I) -> Result<(), FlowError> {
@@ -340,9 +340,9 @@ impl<I, O, TO: JobOrderer> JobReference<I, O, TO> {
     }
 
     /// Makes this step reusable if it hasn't already been used as input
-    pub fn funnelled<T: Send + Sync + 'static>(self) -> Result<Funneled<Self>, FlowError>
+    pub fn funnelled<T: Send + 'static>(self) -> Result<Funneled<Self>, FlowError>
     where
-        I: FromIterator<T> + IntoIterator<Item = T, IntoIter: Send + Sync> + Send + Sync + 'static,
+        I: FromIterator<T> + IntoIterator<Item = T, IntoIter: Send> + Send + 'static,
     {
         let id = self.id;
         transaction_mut(&self.backend, |backend| {
@@ -392,7 +392,7 @@ pub enum FlowError {
 /// Used for wrapping a step with a re-usable output.
 pub struct Funneled<T>(T);
 
-impl<T, R: Clone + Send + Sync + 'static, TO: JobOrderer> Funneled<JobReference<T, R, TO>> {
+impl<T, R: Clone + Send + 'static, TO: JobOrderer> Funneled<JobReference<T, R, TO>> {
     pub fn reusable(self) -> Result<Reusable<Self>, FlowError> {
         let id = self.0.id;
         transaction_mut(&self.0.backend, |backend| {
@@ -537,7 +537,7 @@ fortuples! {
     #[tuples::min_size(1)]
     impl<O> FlowsInto<O> for #Tuple
         where
-            #(#Member: JobRefWithBackend<Out: Send + Sync + 'static>,)*
+            #(#Member: JobRefWithBackend<Out: Send + 'static>,)*
             O: JobRefWithBackend<In=(#(#Member::Out,)*)>,
     {
         type Out = Result<O, FlowError>;

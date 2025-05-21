@@ -5,7 +5,7 @@ use test_log::test;
 mod gradle_like;
 
 #[test]
-fn stepping() -> Result<(), FlowError> {
+fn gradle_like_stepping() -> Result<(), FlowError> {
     let mut flow = FlowBuilder::new()
         .with_task_orderer(SteppedTaskOrderer)
         .build();

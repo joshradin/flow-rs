@@ -46,7 +46,7 @@ impl JobId {
 }
 
 /// This is the data that is used
-pub type Data = Box<dyn Any + Send + Sync>;
+pub type Data = Box<dyn Any + Send>;
 
 /// A backend task
 pub struct BackendJob {
@@ -77,8 +77,8 @@ impl BackendJob {
         action: A,
     ) -> BackendJob
     where
-        I: Send + Sync + 'static,
-        O: Send + Sync + 'static,
+        I: Send + 'static,
+        O: Send + 'static,
         A: Action<Input = I, Output = O> + 'static,
     {
         let id = JobId::new();
@@ -171,8 +171,8 @@ impl BackendJob {
 
     /// Turns this into a funnel input
     pub fn make_funnel<
-        T: Send + Sync + 'static,
-        I: FromIterator<T> + IntoIterator<Item = T, IntoIter: Send + Sync> + Send + Sync + 'static,
+        T: Send + 'static,
+        I: FromIterator<T> + IntoIterator<Item = T, IntoIter: Send> + Send + 'static,
     >(
         &mut self,
     ) -> Result<(), JobError> {
@@ -294,7 +294,7 @@ impl<T, I: FromIterator<T>> ReceiveFunnelInputAction<T, I> {
     }
 }
 
-impl<T: Send + Sync + 'static, I: 'static + FromIterator<T> + Send + Sync> Action
+impl<T: Send + 'static, I: 'static + FromIterator<T> + Send> Action
     for ReceiveFunnelInputAction<T, I>
 {
     type Input = ();
@@ -334,7 +334,7 @@ impl<T> SendOutputAction<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> Action for SendOutputAction<T> {
+impl<T: Send + 'static> Action for SendOutputAction<T> {
     type Input = T;
     type Output = ();
 
@@ -496,7 +496,7 @@ pub struct ReusableOutput<T: 'static + Send + Clone>(PhantomData<T>);
 
 impl<T: 'static + Send + Clone> Sealed for ReusableOutput<T> {}
 
-impl<T: 'static + Send + Sync + Clone> AsOutputFlavor for ReusableOutput<T> {
+impl<T: 'static + Send + Clone> AsOutputFlavor for ReusableOutput<T> {
     type Data = T;
 
     fn to_output(self, id: JobId) -> Output {
@@ -545,7 +545,7 @@ pub struct Output {
 }
 
 impl Output {
-    pub fn make_reusable<T: Send + Sync + Clone + 'static>(&mut self) -> Result<(), JobError> {
+    pub fn make_reusable<T: Send + Clone + 'static>(&mut self) -> Result<(), JobError> {
         if TypeId::of::<T>() != self.output_ty {
             return Err(JobError::UnexpectedType {
                 expected: self.output_ty_str,
@@ -569,7 +569,7 @@ impl Output {
     }
 }
 
-fn create_reusable<T: Send + Sync + Clone + 'static>() -> (
+fn create_reusable<T: Send + Clone + 'static>() -> (
     Reusable<'static, Data>,
     impl FnOnce(Data) -> Result<(), JobError> + Send + 'static,
 ) {
@@ -684,7 +684,7 @@ fortuples! {
     #[tuples::min_size(1)]
     impl InputSource<#Tuple> for Input
     where
-        #(#Member: OutputWithType<T: Send + Sync + 'static>,)*
+        #(#Member: OutputWithType<T: Send + 'static>,)*
     {
         type Data = (#(#Member::T,)*);
 
@@ -908,7 +908,7 @@ pub(crate) mod test_fixtures {
         }
     }
 
-    impl<T: Send + Sync + 'static> InputSource<MockTaskInput<T>> for Input {
+    impl<T: Send + 'static> InputSource<MockTaskInput<T>> for Input {
         type Data = T;
 
         fn use_as_input_source(&mut self, other: MockTaskInput<T>) -> Result<(), JobError> {
