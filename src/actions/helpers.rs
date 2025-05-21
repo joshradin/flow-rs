@@ -65,11 +65,13 @@ pub fn stateful_action<T: Send, A: IntoStatefulAction<T, Marker>, Marker>(
     action.into_action(state)
 }
 
+type BoxedStatefulActionFn<T, I, O> = Box<dyn FnMut(&mut T, I) -> O + Send>;
+
 /// An action with a state
 pub struct ActionWithState<T: Send, I: Send, O: Send> {
     input_flavor: InputFlavor,
     state: T,
-    f: Box<dyn FnMut(&mut T, I) -> O + Send>,
+    f: BoxedStatefulActionFn<T, I, O>,
     _marker: PhantomData<(I, O)>,
 }
 
@@ -111,7 +113,7 @@ where
         ActionWithState {
             input_flavor: InputFlavor::None,
             state,
-            f: f as Box<_>,
+            f: f as BoxedStatefulActionFn<T, (), O> ,
             _marker: Default::default(),
         }
     }
@@ -130,16 +132,15 @@ where
         ActionWithState {
             input_flavor: InputFlavor::Single,
             state,
-            f: f as Box<_>,
+            f: f as BoxedStatefulActionFn<T, I, O> ,
             _marker: Default::default(),
         }
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::actions::{stateful_action, Action, IntoStatefulAction};
+    use crate::actions::{Action, IntoStatefulAction, stateful_action};
     use crate::{Flow, FlowsInto, InputFlavor};
 
     #[test]

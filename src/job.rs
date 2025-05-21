@@ -1,7 +1,7 @@
 //! Allows for defining an action, similar to [`ActionWithState`](crate::actions::ActionWithState) via
 //! a trait object.
 
-use crate::actions::{stateful_action, ActionWithState, IntoAction};
+use crate::actions::{ActionWithState, IntoAction, stateful_action};
 use std::marker::PhantomData;
 
 /// This specifies a type that can be run as part of a Job, that has no input
@@ -45,30 +45,34 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::Flow;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use crate::Flow;
-    use super::*;
-
 
     #[test]
     fn test_job_with_flow() {
         #[derive(Debug, Default)]
         struct TestJob {
-            value: Arc<AtomicBool>
+            value: Arc<AtomicBool>,
         }
 
         impl NoInputJob<()> for TestJob {
-            fn execute(&mut self)  {
-                let _ = self.value.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed);
+            fn execute(&mut self) {
+                let _ =
+                    self.value
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed);
             }
         }
 
         let mut flow: Flow = Flow::default();
         let test = TestJob::default();
         let value = test.value.clone();
-        let t= flow.create("test", test);
+        let t = flow.create("test", test);
         flow.run().unwrap();
-        assert!(value.load(Ordering::SeqCst), "should have run and set the value");
+        assert!(
+            value.load(Ordering::SeqCst),
+            "should have run and set the value"
+        );
     }
 }
