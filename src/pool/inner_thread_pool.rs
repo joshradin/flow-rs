@@ -218,7 +218,7 @@ impl WorkerThread {
         let global = parent.global.clone();
 
         let this = WorkerThread {
-            parent_span: Span::current(),
+            parent_span: parent.parent.clone(),
             parent: Arc::downgrade(parent),
             id,
             global: Arc::downgrade(&global),

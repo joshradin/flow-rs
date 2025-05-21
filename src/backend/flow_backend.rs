@@ -15,7 +15,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
-use tracing::{debug, error_span, field, trace};
+use tracing::{debug, error_span, trace};
 
 /// Executes flow
 #[derive(Debug)]
