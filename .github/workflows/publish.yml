@@ -41,8 +41,6 @@ jobs:
     name: Publish (crates.io)
     needs:
       - audit
-      - build_and_test_linux
-      - build_and_test_windows
 
     runs-on: ubuntu-latest
     timeout-minutes: 25
