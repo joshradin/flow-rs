@@ -105,7 +105,9 @@ impl InnerThreadPool {
 
     /// Workers that are running
     pub fn running(&self) -> usize {
-        self.handles.lock().iter()
+        self.handles
+            .lock()
+            .iter()
             .filter(|handle| handle.state.load() == WorkerThreadState::Running)
             .count()
     }

@@ -74,7 +74,6 @@ impl WorkerPool for FlowThreadPool {
         self.inner.running()
     }
 
-
     fn submit<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
         &self,
         f: F,
@@ -163,14 +162,20 @@ mod tests {
         let barrier = Arc::new(Barrier::new(2));
         let promise = thread_pool.submit({
             let barrier = barrier.clone();
-            move || { barrier.wait(); }
+            move || {
+                barrier.wait();
+            }
         });
-        while thread_pool.running() < 1 { yield_now()}
+        while thread_pool.running() < 1 {
+            yield_now()
+        }
         assert_eq!(thread_pool.running(), 1);
         assert_eq!(thread_pool.active(), 1);
         barrier.wait();
         promise.get();
-        while thread_pool.running() > 0 { yield_now()}
+        while thread_pool.running() > 0 {
+            yield_now()
+        }
         assert_eq!(thread_pool.running(), 0);
         assert_eq!(thread_pool.active(), 1);
     }

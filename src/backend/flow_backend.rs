@@ -6,7 +6,7 @@ use crate::job_ordering::{DefaultTaskOrderer, FlowGraph};
 use crate::job_ordering::{JobOrderer, JobOrdering, JobOrderingError};
 use crate::pool::{FlowThreadPool, WorkerPool};
 use crate::promise::{BoxPromise, IntoPromise, PollPromise, PromiseSet};
-use crossbeam::channel::{bounded, Receiver, SendError, Sender, TryRecvError};
+use crossbeam::channel::{Receiver, SendError, Sender, TryRecvError, bounded};
 use parking_lot::Mutex;
 use static_assertions::assert_impl_all;
 use std::cmp::Ordering;
