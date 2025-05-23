@@ -47,16 +47,65 @@
 //! let sum = flow.get().expect("failed to get sum");
 //! assert_eq!(sum, 75);
 //! ```
+//!
+//! ### Task outputs can be disjointed to be consumed by multiple tasks
+//!
+//! Multiple tasks can take the output of a single task if the parts are disjoint from each other.
+//! Unlike the [`Reusable`] type, the task's output doesn't need to be clonable. Currently, the output
+//! of a disjointable task *must* be `Vec<T>`. Tasks that take the disjointed input can be any
+//! `FromIterator<Item=T>` type.
+//!
+//! ```rust
+//! use jobflow::{Flow, FlowsInto};
+//! let mut flow = Flow::new();
+//! let generator = flow.create("generator", || { (0..32).into_iter().collect::<Vec<i32>>() }).disjointed().unwrap();
+//! let first_half = flow.create("1/2", |v: Vec<i32>| { assert_eq!(v.len(), 16)});
+//! let second_half = flow.create("2/2", |v: Vec<i32>| { assert_eq!(v.len(), 16)});
+//!
+//! generator.gets(..16).flows_into(first_half).unwrap();
+//! generator.gets(16..).flows_into(second_half).unwrap();
+//!
+//! flow.run().expect("failed to run flow");
+//! ```
 
 pub mod actions;
 pub(crate) mod backend;
 mod flow;
+pub mod io;
 pub mod job;
 pub mod job_ordering;
 pub mod listener;
-mod pool;
-pub mod promise;
+mod sync;
+
+mod private {
+    use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+    use std::sync::Arc;
+
+    /// Sealed to make sure only internal types can implement this
+    pub trait Sealed {}
+    macro_rules! impl_sealed {
+        ($($ty:ty),* $(,)?) => {
+            $(
+                impl Sealed for $ty {}
+            )*
+        };
+    }
+    impl<T: Sealed> Sealed for &T {}
+    impl<T: Sealed> Sealed for &mut T {}
+    impl<T: Sealed> Sealed for Box<T> {}
+    impl<T: Sealed> Sealed for Arc<T> {}
+    impl<T: Sealed> Sealed for [T] {}
+    impl_sealed!(
+        usize,
+        Range<usize>,
+        RangeInclusive<usize>,
+        RangeFrom<usize>,
+        RangeTo<usize>,
+        RangeToInclusive<usize>,
+        RangeFull,
+    );
+}
 
 pub use backend::job::{InputFlavor, JobError, JobId};
 pub use flow::*;
-pub use pool::FlowThreadPool;
+pub use sync::pool::FlowThreadPool;

@@ -1,6 +1,6 @@
 use crate::backend::job::Data;
-use crate::promise::MapPromise;
-use crate::promise::{BoxPromise, PollPromise, Promise};
+use crate::sync::promise::MapPromise;
+use crate::sync::promise::{BoxPromise, PollPromise, Promise};
 use parking_lot::Mutex;
 use std::any::type_name;
 use std::fmt::{Debug, Formatter};
@@ -104,7 +104,7 @@ where
     }
 }
 
-impl<'lf, T, P> crate::promise::IntoPromise for Reusable<'lf, T, P>
+impl<'lf, T, P> crate::sync::promise::IntoPromise for Reusable<'lf, T, P>
 where
     T: Send + 'lf,
     P: Promise<Output = T> + 'lf,
@@ -151,7 +151,7 @@ impl<'lf, T: Send + 'lf, P: Promise<Output = T> + 'lf> Promise for IntoPromise<'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::promise::{GetPromise, Just};
+    use crate::sync::promise::{GetPromise, Just};
 
     #[test]
     fn test_reusuable() {

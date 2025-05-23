@@ -1,7 +1,6 @@
-use crate::pool::settings::ThreadPoolSettings;
+use crate::sync::pool::settings::ThreadPoolSettings;
 use crossbeam::atomic::AtomicCell;
 use parking_lot::{Mutex, RwLock};
-use static_assertions::assert_impl_all;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::num::NonZero;
@@ -42,8 +41,6 @@ impl Debug for ThreadPoolTask {
         f.debug_struct("ThreadPoolTask").finish()
     }
 }
-
-assert_impl_all!(ThreadPoolTask: Send);
 
 type Stealer = crossbeam::deque::Stealer<ThreadPoolTask>;
 type Injector = crossbeam::deque::Injector<ThreadPoolTask>;
@@ -190,8 +187,6 @@ impl InnerThreadPool {
         Ok(())
     }
 }
-
-assert_impl_all!(InnerThreadPool: Sync);
 
 /// The worker thread
 struct WorkerThread {
@@ -401,9 +396,13 @@ impl WorkerThreadRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use static_assertions::assert_impl_all;
     use std::sync::Barrier;
     use test_log::test;
     use tracing::trace;
+
+    assert_impl_all!(ThreadPoolTask: Send);
+    assert_impl_all!(InnerThreadPool: Sync);
 
     #[test]
     fn test_inner_thread_pool() {

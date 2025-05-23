@@ -1,6 +1,6 @@
 use crate::backend::job::Data;
-use crate::promise::MapPromise;
-use crate::promise::{IntoPromise, PollPromise, Promise, PromiseSet};
+use crate::sync::promise::MapPromise;
+use crate::sync::promise::{IntoPromise, PollPromise, Promise, PromiseSet};
 
 /// The backend funnel implementation.
 ///

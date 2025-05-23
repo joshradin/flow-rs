@@ -3,11 +3,10 @@
 //!
 
 use crate::backend::recv_promise::RecvPromise;
-use crate::pool::inner_thread_pool::InnerThreadPool;
-use crate::pool::settings::ThreadPoolSettings;
-use crate::promise::{PollPromise, Promise};
+use crate::sync::pool::inner_thread_pool::InnerThreadPool;
+use crate::sync::pool::settings::ThreadPoolSettings;
+use crate::sync::promise::{PollPromise, Promise};
 use crossbeam::channel::bounded;
-use static_assertions::assert_impl_all;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,8 +41,6 @@ impl Default for FlowThreadPool {
         Self::with_settings(ThreadPoolSettings::default())
     }
 }
-
-assert_impl_all!(FlowThreadPool: Sync);
 
 impl FlowThreadPool {
     /// Create a new thread pool
@@ -107,13 +104,15 @@ impl<T: Send> Promise for FlowThreadPoolPromise<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::promise::{GetPromise, PromiseSet};
+    use crate::sync::promise::{GetPromise, PromiseSet};
+    use static_assertions::assert_impl_all;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread::yield_now;
     use tracing::{info, info_span};
 
+    assert_impl_all!(FlowThreadPool: Sync);
     #[test]
     fn test_thread_pool_executor() {
         let pool = FlowThreadPool::default();

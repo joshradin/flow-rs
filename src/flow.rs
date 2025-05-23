@@ -5,8 +5,8 @@ use crate::backend::job::{BackendJob, JobError, JobId, SingleOutput, TypedOutput
 use crate::job_ordering::{DefaultTaskOrderer, JobOrderer, SteppedTaskOrderer};
 use crate::job_ordering::{FlowGraph, JobOrderingError, format_cycle};
 use crate::listener::FlowListener;
-use crate::pool::FlowThreadPool;
-use crate::promise::{IntoPromise, PromiseExt};
+use crate::sync::pool::FlowThreadPool;
+use crate::sync::promise::{IntoPromise, PromiseExt};
 use fortuples::fortuples;
 use parking_lot::{Mutex, RwLock};
 use std::any::TypeId;
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 type StrongFlowBackend<T = DefaultTaskOrderer> = Rc<RwLock<FlowBackend<T>>>;
-type WeakFlowBackend<T = DefaultTaskOrderer> = Weak<RwLock<FlowBackend<T>>>;
+pub(crate) type WeakFlowBackend<T = DefaultTaskOrderer> = Weak<RwLock<FlowBackend<T>>>;
 
 /// Builds a [`Flow`]
 pub struct FlowBuilder<I, O, T = DefaultTaskOrderer> {
@@ -306,6 +306,8 @@ pub struct JobReference<I, O, T: JobOrderer = DefaultTaskOrderer> {
     _marker: PhantomData<fn(I) -> O>,
 }
 
+impl<I, O, T: JobOrderer> Sealed for JobReference<I, O, T> {}
+
 impl<I, O, TO: JobOrderer> JobReference<I, O, TO> {
     fn new(backend_task: &BackendJob, cl: &StrongFlowBackend<TO>) -> Self {
         Self {
@@ -361,7 +363,45 @@ impl<I, O, TO: JobOrderer> JobReference<I, O, TO> {
     }
 }
 
-fn transaction_mut<T, U: JobOrderer, F: FnOnce(&mut FlowBackend<U>) -> T>(
+impl<I, O: Send + 'static, TO: JobOrderer> JobReference<I, Vec<O>, TO> {
+    pub fn disjointed(self) -> Result<Disjointed<Self>, FlowError> {
+        let id = self.id;
+        transaction_mut(&self.backend, |backend| {
+            let option = backend.get_mut(id).expect("backend task must exist");
+            option.make_disjointed::<O>()
+        })?;
+
+        Ok(Disjointed(Self {
+            backend: self.backend.clone(),
+            id,
+            name: self.name.clone(),
+            input_ty: self.input_ty,
+            output_ty: self.output_ty,
+            _marker: Default::default(),
+        }))
+    }
+}
+
+impl<I, O: Send + 'static, TO: JobOrderer> Funneled<JobReference<I, Vec<O>, TO>> {
+    pub fn disjointed(self) -> Result<Disjointed<Self>, FlowError> {
+        let id = self.0.id;
+        transaction_mut(&self.0.backend, |backend| {
+            let option = backend.get_mut(id).expect("backend task must exist");
+            option.make_disjointed::<O>()
+        })?;
+
+        Ok(Disjointed(Funneled(JobReference {
+            backend: self.0.backend.clone(),
+            id,
+            name: self.0.name.clone(),
+            input_ty: self.0.input_ty,
+            output_ty: self.0.output_ty,
+            _marker: Default::default(),
+        })))
+    }
+}
+
+pub(crate) fn transaction_mut<T, U: JobOrderer, F: FnOnce(&mut FlowBackend<U>) -> T>(
     weak: &WeakFlowBackend<U>,
     f: F,
 ) -> T {
@@ -379,6 +419,8 @@ pub enum FlowError {
     TaskError(#[from] JobError),
     #[error(transparent)]
     BackendFlowError(#[from] FlowBackendError),
+    #[error(transparent)]
+    DisjointError(#[from] DisjointedError),
     #[error("Tasks are not disjoint")]
     NondisjointedTasks,
     #[error("An output was expected for this flow, but none was found")]
@@ -387,10 +429,13 @@ pub enum FlowError {
     NoOutputTask,
     #[error("Task with id {} was not found", .0)]
     TaskNotFound(JobId),
+    #[error("The output of this task is not disjointed")]
+    OutputNotDisjoint,
 }
 
 /// Used for wrapping a step with a re-usable output.
-pub struct Funneled<T>(T);
+pub struct Funneled<T>(pub(crate) T);
+impl<T: Sealed> Sealed for Funneled<T> {}
 
 impl<T, R: Clone + Send + 'static, TO: JobOrderer> Funneled<JobReference<T, R, TO>> {
     pub fn reusable(self) -> Result<Reusable<Self>, FlowError> {
@@ -406,6 +451,7 @@ impl<T, R: Clone + Send + 'static, TO: JobOrderer> Funneled<JobReference<T, R, T
 
 /// Used for wrapping a step with a re-usable output.
 pub struct Reusable<T>(T);
+impl<T: Sealed> Sealed for Reusable<T> {}
 
 impl<I, T: Clone, TO: JobOrderer> Clone for Reusable<JobReference<I, T, TO>> {
     fn clone(&self) -> Self {
@@ -603,27 +649,9 @@ impl<T: JobRefWithBackend> DependsOn<JobId> for T {
 }
 
 /// A type that has an associated job id
-pub trait JobRef {
+pub trait JobRef: Sealed {
     /// Gets the id of this job ref
     fn id(&self) -> &JobId;
-}
-
-struct AnyStepRef<I, O, TO: JobOrderer>(WeakFlowBackend<TO>, JobId, PhantomData<(I, O)>);
-
-impl<I, O, TO: JobOrderer> JobRefWithBackend for AnyStepRef<I, O, TO> {
-    type In = I;
-    type Out = O;
-    type TO = TO;
-
-    fn backend(&self) -> &WeakFlowBackend<TO> {
-        &self.0
-    }
-}
-
-impl<I, O, TO: JobOrderer> JobRef for AnyStepRef<I, O, TO> {
-    fn id(&self) -> &JobId {
-        &self.1
-    }
 }
 
 impl<I, O, TO: JobOrderer> JobRefWithBackend for JobReference<I, O, TO> {
@@ -726,7 +754,7 @@ impl<O, T: JobRefWithBackend<Out = O>> FlowsInto<FlowOutput<O, T::TO>> for T {
 }
 
 /// private trait implementations
-mod private {
+pub(crate) mod private {
     use super::*;
 
     pub trait JobRefWithBackend: JobRef {
@@ -739,6 +767,9 @@ mod private {
 
     pub trait FunneledJobRef: JobRefWithBackend {}
 }
+use crate::backend::disjointed::DisjointedError;
+use crate::io::disjoint::Disjointed;
+use crate::private::Sealed;
 use private::*;
 
 #[cfg(test)]
@@ -806,5 +837,41 @@ mod tests {
 
         t2.flows_into(&t1).expect("Should be Ok");
         t3.flows_into(&t1).expect("Should be Ok");
+    }
+
+    #[test]
+    fn test_type_checking_disjointed() {
+        let mut flow: Flow = Flow::new();
+
+        let t1 = flow
+            .create("create_i32", || vec![1, 2, 3, 4, 5, 6])
+            .disjointed()
+            .unwrap();
+        let t2 = flow.create("consume_0", |i: i32| assert_eq!(i, 1));
+        let t3 = flow.create("consume_1:3", |i: Vec<i32>| assert_eq!(i, [2, 3, 4]));
+        let t4 = flow.create("produce_4:5", |i: Vec<i32>| assert_eq!(i, [5, 6]));
+
+        t1.gets(0).flows_into(t2).expect("Should be Ok");
+        t1.gets(1..=3).flows_into(t3).expect("Should be Ok");
+        t1.gets(4..=5).flows_into(t4).expect("Should be Ok");
+    }
+
+    #[test]
+    fn test_type_checking_disjointed_funnelable() {
+        let mut flow: Flow = Flow::new();
+
+        let t1 = flow
+            .create("create_i32", |v: Vec<i32>| vec![1, 2, 3, 4, 5, 6])
+            .disjointed()
+            .unwrap()
+            .funnelled()
+            .unwrap();
+        let t2 = flow.create("consume_0", |i: i32| assert_eq!(i, 1));
+        let t3 = flow.create("consume_1:3", |i: Vec<i32>| assert_eq!(i, [2, 3, 4]));
+        let t4 = flow.create("produce_4:5", |i: Vec<i32>| assert_eq!(i, [5, 6]));
+
+        t1.get(0).flows_into(t2).expect("Should be Ok");
+        t1.get(1..=3).flows_into(t3).expect("Should be Ok");
+        t1.get(4..=5).flows_into(t4).expect("Should be Ok");
     }
 }
