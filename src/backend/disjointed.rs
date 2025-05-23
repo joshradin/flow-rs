@@ -319,6 +319,7 @@ mod tests {
     use crossbeam::channel::bounded;
     use static_assertions::assert_impl_all;
     use std::sync::Arc;
+    use crate::sync::promise::GetPromise;
 
     assert_impl_all!(Disjointed<'static, Data>: Send);
     assert_impl_all!(Buf<Data>: Sync);
