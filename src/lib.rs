@@ -51,11 +51,40 @@
 pub mod actions;
 pub(crate) mod backend;
 mod flow;
+pub mod io;
 pub mod job;
 pub mod job_ordering;
 pub mod listener;
 mod pool;
-pub mod promise;
+mod promise;
+
+mod private {
+    use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+    use std::sync::Arc;
+
+    /// Sealed to make sure only internal types can implement this
+    pub trait Sealed {}
+    macro_rules! impl_sealed {
+        ($($ty:ty),* $(,)?) => {
+            $(
+                impl Sealed for $ty {}
+            )*
+        };
+    }
+    impl<T: Sealed> Sealed for &T {}
+    impl<T: Sealed> Sealed for &mut T {}
+    impl<T: Sealed> Sealed for Box<T> {}
+    impl<T: Sealed> Sealed for Arc<T> {}
+    impl<T: Sealed> Sealed for [T] {}
+    impl_sealed!(
+        usize,
+        Range<usize>,
+        RangeInclusive<usize>,
+        RangeFrom<usize>,
+        RangeTo<usize>,
+        RangeToInclusive<usize>
+    );
+}
 
 pub use backend::job::{InputFlavor, JobError, JobId};
 pub use flow::*;

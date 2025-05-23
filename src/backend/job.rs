@@ -3,7 +3,6 @@
 use crate::actions::{Action, BoxAction, Runnable, action};
 use crate::backend::flow_backend::{FlowBackendError, FlowBackendInput};
 use crate::backend::funnel::BackendFunnel;
-use crate::backend::job::private::Sealed;
 use crate::backend::recv_promise::RecvPromise;
 use crate::backend::reusable;
 use crate::backend::reusable::Reusable;
@@ -19,6 +18,7 @@ use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tracing::trace;
+use crate::private::Sealed;
 
 static JOB_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -950,10 +950,6 @@ pub(crate) mod test_fixtures {
             Ok(())
         }
     }
-}
-
-mod private {
-    pub trait Sealed {}
 }
 
 #[cfg(test)]

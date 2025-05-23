@@ -306,6 +306,10 @@ pub struct JobReference<I, O, T: JobOrderer = DefaultTaskOrderer> {
     _marker: PhantomData<fn(I) -> O>,
 }
 
+impl<I, O, T: JobOrderer> Sealed for JobReference<I, O, T> {
+
+}
+
 impl<I, O, TO: JobOrderer> JobReference<I, O, TO> {
     fn new(backend_task: &BackendJob, cl: &StrongFlowBackend<TO>) -> Self {
         Self {
@@ -391,6 +395,7 @@ pub enum FlowError {
 
 /// Used for wrapping a step with a re-usable output.
 pub struct Funneled<T>(T);
+impl<T: Sealed> Sealed for Funneled<T> {}
 
 impl<T, R: Clone + Send + 'static, TO: JobOrderer> Funneled<JobReference<T, R, TO>> {
     pub fn reusable(self) -> Result<Reusable<Self>, FlowError> {
@@ -406,6 +411,7 @@ impl<T, R: Clone + Send + 'static, TO: JobOrderer> Funneled<JobReference<T, R, T
 
 /// Used for wrapping a step with a re-usable output.
 pub struct Reusable<T>(T);
+impl<T: Sealed> Sealed for Reusable<T> {}
 
 impl<I, T: Clone, TO: JobOrderer> Clone for Reusable<JobReference<I, T, TO>> {
     fn clone(&self) -> Self {
@@ -603,28 +609,11 @@ impl<T: JobRefWithBackend> DependsOn<JobId> for T {
 }
 
 /// A type that has an associated job id
-pub trait JobRef {
+pub trait JobRef : Sealed {
     /// Gets the id of this job ref
     fn id(&self) -> &JobId;
 }
 
-struct AnyStepRef<I, O, TO: JobOrderer>(WeakFlowBackend<TO>, JobId, PhantomData<(I, O)>);
-
-impl<I, O, TO: JobOrderer> JobRefWithBackend for AnyStepRef<I, O, TO> {
-    type In = I;
-    type Out = O;
-    type TO = TO;
-
-    fn backend(&self) -> &WeakFlowBackend<TO> {
-        &self.0
-    }
-}
-
-impl<I, O, TO: JobOrderer> JobRef for AnyStepRef<I, O, TO> {
-    fn id(&self) -> &JobId {
-        &self.1
-    }
-}
 
 impl<I, O, TO: JobOrderer> JobRefWithBackend for JobReference<I, O, TO> {
     type In = I;
@@ -725,8 +714,10 @@ impl<O, T: JobRefWithBackend<Out = O>> FlowsInto<FlowOutput<O, T::TO>> for T {
     }
 }
 
+
+
 /// private trait implementations
-mod private {
+pub(crate) mod private {
     use super::*;
 
     pub trait JobRefWithBackend: JobRef {
@@ -740,6 +731,7 @@ mod private {
     pub trait FunneledJobRef: JobRefWithBackend {}
 }
 use private::*;
+use crate::private::Sealed;
 
 #[cfg(test)]
 mod tests {
