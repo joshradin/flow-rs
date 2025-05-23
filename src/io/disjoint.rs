@@ -1,16 +1,24 @@
 //! The [`Disjointed`] type.
 //!
 //! ```rust
-//! use jobflow::{Flow, FlowsInto};
 //! use jobflow::actions::Supplier;
+//! use jobflow::{Flow, FlowsInto};
 //! let mut flow = Flow::new();
-//! let split = flow.create("split", || -> Vec<i32> { vec![0, 1, 2] }).disjointed().unwrap();
+//! let split = flow
+//!     .create("split", || -> Vec<i32> { vec![0, 1, 2] })
+//!     .disjointed()
+//!     .unwrap();
 //!
-//! split.gets(0).flows_into(flow.create("0", |i: i32| { assert_eq!(i, 0)})).unwrap();
-//! split.gets(1..=2).flows_into(flow.create("1..=2", |i: Vec<i32>| { assert_eq!(i, [1, 2])})).unwrap();
+//! split
+//!     .gets(0)
+//!     .flows_into(flow.create("0", |i: i32| assert_eq!(i, 0)))
+//!     .unwrap();
+//! split
+//!     .gets(1..=2)
+//!     .flows_into(flow.create("1..=2", |i: Vec<i32>| assert_eq!(i, [1, 2])))
+//!     .unwrap();
 //!
 //! flow.run().expect("failed to run");
-//!
 //! ```
 
 use crate::flow::private::JobRefWithBackend;
