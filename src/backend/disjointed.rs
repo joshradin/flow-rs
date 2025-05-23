@@ -316,10 +316,10 @@ mod tests {
     use crate::backend::disjointed::{Buf, Disjointed};
     use crate::backend::job::Data;
     use crate::backend::recv_promise::RecvPromise;
+    use crate::sync::promise::GetPromise;
     use crossbeam::channel::bounded;
     use static_assertions::assert_impl_all;
     use std::sync::Arc;
-    use crate::sync::promise::GetPromise;
 
     assert_impl_all!(Disjointed<'static, Data>: Send);
     assert_impl_all!(Buf<Data>: Sync);
