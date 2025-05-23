@@ -133,6 +133,9 @@ impl<T> OnceLock<T> {
         self.state.load() == OnceLockState::Initialized
     }
 }
+unsafe impl<T: Send> Send for OnceLock<T> {}
+unsafe impl<T: Sync + Send> Sync for OnceLock<T> {}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 enum OnceLockState {
     #[default]

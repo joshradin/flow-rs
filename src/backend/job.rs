@@ -214,6 +214,27 @@ impl BackendJob {
         Ok(())
     }
 
+    /// Turns this into a disjointed output
+    pub fn make_disjointed<T: Send + 'static>(&mut self) -> Result<(), JobError> {
+        if TypeId::of::<Vec<T>>() != self.output.output_ty {
+            return Err(JobError::UnexpectedType {
+                expected: self.output.output_ty_str,
+                received: type_name::<T>(),
+                comment: None,
+            });
+        }
+        self.output.make_disjointed::<T>()?;
+
+        // let action = std::mem::replace(&mut self.action, Box::new(action(|_| {})));
+        // let (new_sender, new_receiver) = bounded::<Data>(1);
+        // let old_receiver = std::mem::replace(&mut self.action_output_receiver, new_receiver);
+        //
+        // self.action =
+        //     Box::new(action.chain(SendDisjointedOutputAction::<T>::new(old_receiver, new_sender)));
+
+        Ok(())
+    }
+
     /// Gets the input for this task
     #[must_use]
     pub fn input_mut(&mut self) -> &mut Input {
@@ -268,12 +289,21 @@ impl<T: Send + 'static> Action for ReceiveInputAction<T> {
             .expect("failed to receive input")
             .downcast::<T>()
             .unwrap_or_else(|e| {
-                panic!(
-                    "failed to downcast {:?} ({:?}) to `{}`",
-                    e,
-                    (*e).type_id(),
-                    type_name::<T>()
-                )
+                if let Some(s) = e.downcast_ref::<Vec<Data>>() {
+                    panic!(
+                        "failed to downcast vector of data {:?} ({:?}) to `{}` while receiving input. Perhaps you need to downcast it's elements",
+                        s,
+                        (*s).type_id(),
+                        type_name::<T>()
+                    )
+                }  else {
+                    panic!(
+                        "failed to downcast {:?} ({:?}) to `{}` while receiving input",
+                        e,
+                        (*e).type_id(),
+                        type_name::<T>()
+                    )
+                }
             });
 
         *i
@@ -281,6 +311,43 @@ impl<T: Send + 'static> Action for ReceiveInputAction<T> {
 
     fn input_flavor(&self) -> InputFlavor {
         InputFlavor::None
+    }
+}
+
+struct SendDisjointedOutputAction<T> {
+    receiver: Receiver<Data>,
+    sender: Sender<Data>,
+    _marker: PhantomData<T>,
+}
+
+impl<T: Send + 'static> Action for SendDisjointedOutputAction<T> {
+    type Input = ();
+    type Output = ();
+
+    fn apply(&mut self, input: Self::Input) -> Self::Output {
+        let i = *self
+            .receiver
+            .recv()
+            .expect("failed to receive input")
+            .downcast::<Vec<T>>()
+            .unwrap_or_else(|e| {
+                panic!("failed to downcast {:?} to `{}`", e, type_name::<Vec<T>>())
+            });
+        panic!("")
+    }
+
+    fn input_flavor(&self) -> InputFlavor {
+        InputFlavor::None
+    }
+}
+
+impl<T> SendDisjointedOutputAction<T> {
+    fn new(receiver: Receiver<Data>, sender: Sender<Data>) -> Self {
+        Self {
+            receiver,
+            sender,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -379,8 +446,8 @@ pub struct Input {
     input_ty: TypeId,
     input_ty_str: &'static str,
     task_dependencies: HashSet<JobId>,
-    flavor: InputFlavor,
-    kind: InputKind,
+    pub(super) flavor: InputFlavor,
+    pub(super) kind: InputKind,
 }
 
 impl Input {
@@ -405,9 +472,7 @@ impl Input {
         }
     }
 
-    #[cfg(test)]
-    #[allow(unused)]
-    fn check_type<T: 'static>(&self) -> Result<(), JobError> {
+    pub(super) fn check_type<T: 'static>(&self) -> Result<(), JobError> {
         if TypeId::of::<T>() != self.input_ty {
             Err(JobError::UnexpectedType {
                 expected: self.input_ty_str,
@@ -537,7 +602,7 @@ impl<T: 'static + Send + Clone> ReusableOutput<T> {
 }
 
 #[derive(Debug)]
-enum InputKind {
+pub(super) enum InputKind {
     None,
     Single(BoxPromise<'static, Data>),
     Funnel(BackendFunnel),
@@ -555,8 +620,8 @@ pub struct Output {
     task_id: JobId,
     output_ty: TypeId,
     output_ty_str: &'static str,
-    flavor: OutputFlavor,
-    kind: OutputKind,
+    pub(crate) flavor: OutputFlavor,
+    pub(crate) kind: OutputKind,
     set_output_fn: Option<SetOutputFn>,
 }
 
@@ -610,6 +675,7 @@ impl Output {
     }
 }
 
+/// This creates a reusable that appears a
 fn create_reusable<T: Send + Clone + 'static>() -> (
     Reusable<'static, Data>,
     impl FnOnce(Data) -> Result<(), JobError> + Send + 'static,
@@ -631,16 +697,15 @@ fn create_disjointed<T: Send + 'static>() -> (
     impl FnOnce(Data) -> Result<(), JobError>,
 ) {
     let (send, receive) = bounded::<Vec<T>>(1);
-    let inner = RecvPromise::new(receive);
-    let as_data_vec: BoxPromise<Vec<Data>> = Box::new(inner.map(|t| {
-        t.into_iter()
-            .map(|t| Box::new(t) as Data)
-            .collect()
-    }));
+    let inner = RecvPromise::new(receive)
+        .map(|data| data.into_iter().map(|d| Box::new(d) as Data).collect());
 
-    let disjointed: Disjointed<'static, Data>= Disjointed::new(as_data_vec);
+    let disjointed: Disjointed<'static, Data, _> =
+        Disjointed::new(Box::new(inner) as BoxPromise<_>);
     let f = move |data: Data| -> Result<(), JobError> {
-        let as_t = *data.downcast::<Vec<T>>().expect("failed to downcast to vector");
+        let as_t = *data
+            .downcast::<Vec<T>>()
+            .expect("failed to downcast to vector");
         send.send(as_t)
             .map_err(|SendError(e)| SendError(Box::new(e) as Data))?;
         Ok(())
@@ -740,27 +805,6 @@ impl InputSource<&mut Output> for Input {
                 output_flavor: o,
                 input_flavor: i,
             }),
-        }
-    }
-}
-impl<P: Promise<Output = Data> + 'static> InputSource<P> for Input {
-    type Data = P::Output;
-
-    fn use_as_input_source(&mut self, other: P) -> Result<(), JobError> {
-        match (self.flavor, &mut self.kind) {
-            (InputFlavor::None, _) => Err(JobError::UnexpectedInput),
-            (InputFlavor::Single, to_set @ InputKind::None) => {
-                *to_set = InputKind::Single(Box::new(other));
-                Ok(())
-            }
-            (InputFlavor::Single, InputKind::Single(_)) => Err(JobError::InputAlreadySet),
-            (InputFlavor::Funnel, InputKind::Funnel(funnel)) => {
-                funnel.insert(other);
-                Ok(())
-            }
-            _ => {
-                panic!("input kind and flavor mismatch")
-            }
         }
     }
 }
@@ -935,7 +979,7 @@ impl IntoPromise for &mut Output {
 }
 
 #[derive(Debug)]
-enum OutputKind {
+pub(crate) enum OutputKind {
     /// no output
     None,
     /// used when the output can only be used once
@@ -1149,11 +1193,9 @@ mod tests {
     #[test]
     fn test_make_output_disjointed() {
         let mut task = BackendJob::new("task", SingleOutput::new(), action(move || vec![1, 2, 3]));
-        task.output_mut()
-            .make_disjointed::<char>()
+        task.make_disjointed::<char>()
             .expect_err("should fail to make disjoint");
-        task.output_mut()
-            .make_disjointed::<i32>()
+        task.make_disjointed::<i32>()
             .expect("failed to make disjoint");
     }
 
@@ -1162,7 +1204,6 @@ mod tests {
         let mut task1 =
             BackendJob::new("task1", SingleOutput::new(), action(move || vec![1, 2, 3]));
         task1
-            .output_mut()
             .make_disjointed::<i32>()
             .expect("failed to make disjoint");
         let disjoint = task1
@@ -1178,14 +1219,16 @@ mod tests {
             .expect("failed to set");
 
         let mut task3 =
-            BackendJob::new("task2", SingleOutput::new(), action(move |i: Vec<i32>| {}));
+            BackendJob::new("task2", SingleOutput::new(), action(move |i: Vec<i32>| {
+                assert_eq!(i.len(), 2);
+            }));
         task3
             .input_mut()
             .set_source(
                 disjoint
                     .get_range(1..)
                     .unwrap()
-                    .map(|d| Box::new(d) as Data),
+                    .downcast_elements::<i32>(),
             )
             .expect("failed to set");
 

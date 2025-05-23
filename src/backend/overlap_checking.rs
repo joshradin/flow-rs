@@ -151,7 +151,10 @@ mod tests {
         assert_eq!(ranges_overlap(&(..=0), &(0..)), true);
         assert_eq!(ranges_overlap(&(..0), &(0..)), false);
         assert_eq!(ranges_overlap(&(..0), &(10..)), false);
+        assert_eq!(ranges_overlap(&(..3), &(3..)), false);
     }
+    
+    
     #[test]
     fn test_overlap_checker() {
         let mut overlap = OverlapChecker::<usize>::new();
