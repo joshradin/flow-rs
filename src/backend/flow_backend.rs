@@ -4,11 +4,10 @@ use crate::backend::job::{BackendJob, Data, JobError, JobId, Output};
 use crate::backend::recv_promise::RecvPromise;
 use crate::job_ordering::{DefaultTaskOrderer, FlowGraph};
 use crate::job_ordering::{JobOrderer, JobOrdering, JobOrderingError};
-use crate::pool::{FlowThreadPool, WorkerPool};
-use crate::promise::{BoxPromise, IntoPromise, PollPromise, PromiseSet};
+use crate::sync::pool::{FlowThreadPool, WorkerPool};
+use crate::sync::promise::{BoxPromise, IntoPromise, PollPromise, PromiseSet};
 use crossbeam::channel::{Receiver, SendError, Sender, TryRecvError, bounded};
 use parking_lot::Mutex;
-use static_assertions::assert_impl_all;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
@@ -28,7 +27,6 @@ pub struct FlowBackend<T: JobOrderer = DefaultTaskOrderer, P: WorkerPool = FlowT
     output: FlowBackendOutput,
 }
 
-assert_impl_all!(FlowBackend: Send);
 
 impl FlowBackend {
     /// Creates a new flow backend
@@ -466,12 +464,14 @@ impl FlowGraph for BackendFlowGraph {
 
 #[cfg(test)]
 mod tests {
+    use static_assertions::assert_impl_all;
     use super::*;
     use crate::actions::action;
     use crate::backend::job::test_fixtures::MockTaskInput;
     use crate::backend::job::{InputFlavor, ReusableOutput, SingleOutput};
     use test_log::test;
 
+    assert_impl_all!(FlowBackend: Send);
     #[test]
     fn test_can_create_default_worker_pool() {
         let _pool = FlowBackend::default();

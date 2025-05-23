@@ -5,8 +5,8 @@ use crate::backend::job::{BackendJob, JobError, JobId, SingleOutput, TypedOutput
 use crate::job_ordering::{DefaultTaskOrderer, JobOrderer, SteppedTaskOrderer};
 use crate::job_ordering::{FlowGraph, JobOrderingError, format_cycle};
 use crate::listener::FlowListener;
-use crate::pool::FlowThreadPool;
-use crate::promise::{IntoPromise, PromiseExt};
+use crate::sync::pool::FlowThreadPool;
+use crate::sync::promise::{IntoPromise, PromiseExt};
 use fortuples::fortuples;
 use parking_lot::{Mutex, RwLock};
 use std::any::TypeId;

@@ -1,16 +1,18 @@
 //! A task within the backend
 
-use crate::actions::{Action, BoxAction, Runnable, action};
+use crate::actions::{action, Action, BoxAction, Runnable};
+use crate::backend::disjointed::Disjointed;
 use crate::backend::flow_backend::{FlowBackendError, FlowBackendInput};
 use crate::backend::funnel::BackendFunnel;
 use crate::backend::recv_promise::RecvPromise;
 use crate::backend::reusable;
 use crate::backend::reusable::Reusable;
-use crate::promise::{BoxPromise, PollPromise, Promise, PromiseExt, PromiseSet};
-use crate::promise::{IntoPromise, MapPromise};
-use crossbeam::channel::{Receiver, RecvError, SendError, Sender, bounded};
+use crate::private::Sealed;
+use crate::sync::promise::{BoxPromise, PollPromise, Promise, PromiseExt, PromiseSet};
+use crate::sync::promise::{IntoPromise, MapPromise};
+use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
 use fortuples::fortuples;
-use std::any::{Any, TypeId, type_name};
+use std::any::{type_name, Any, TypeId};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
@@ -18,7 +20,6 @@ use std::num::NonZero;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 use tracing::trace;
-use crate::private::Sealed;
 
 static JOB_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -111,7 +112,7 @@ impl BackendJob {
                     .chain(SendOutputAction::new(output_sender)),
             ),
             InputFlavor::Funnel => {
-                todo!()
+                todo!("Directly creating funnel input not supported")
             }
         };
         let output = output.to_output(id);
@@ -183,6 +184,7 @@ impl BackendJob {
             return Err(JobError::UnexpectedType {
                 expected: self.input.input_ty_str,
                 received: type_name::<T>(),
+                comment: None,
             });
         }
         self.input.flavor = InputFlavor::Funnel;
@@ -410,6 +412,7 @@ impl Input {
             Err(JobError::UnexpectedType {
                 expected: self.input_ty_str,
                 received: type_name::<T>(),
+                comment: None,
             })
         } else {
             Ok(())
@@ -545,6 +548,7 @@ pub enum OutputFlavor {
     None,
     Single,
     Reusable,
+    Disjointed,
 }
 
 pub struct Output {
@@ -562,6 +566,7 @@ impl Output {
             return Err(JobError::UnexpectedType {
                 expected: self.output_ty_str,
                 received: type_name::<T>(),
+                comment: None,
             });
         } else if matches!(self.kind, OutputKind::Once(None)) {
             return Err(JobError::OutputAlreadyUsed);
@@ -573,6 +578,30 @@ impl Output {
 
         self.set_output_fn = Some(SetOutputFn::new(f));
         self.kind = OutputKind::Reusable(promise);
+        Ok(())
+    }
+
+    pub fn make_disjointed<T: Send + 'static>(&mut self) -> Result<(), JobError> {
+        if TypeId::of::<Vec<T>>() != self.output_ty {
+            return Err(JobError::UnexpectedType {
+                expected: self.output_ty_str,
+                received: type_name::<T>(),
+                comment: format!(
+                    "To make disjointed, the output must have been declared as type `Vec<{}>`",
+                    type_name::<T>()
+                )
+                .into(),
+            });
+        } else if matches!(self.kind, OutputKind::Once(None)) {
+            return Err(JobError::OutputAlreadyUsed);
+        }
+
+        self.flavor = OutputFlavor::Disjointed;
+
+        let (disjointed, f) = create_disjointed::<T>();
+        self.set_output_fn = Some(SetOutputFn::new(f));
+        self.kind = OutputKind::Disjointed(disjointed);
+
         Ok(())
     }
 
@@ -595,6 +624,29 @@ fn create_reusable<T: Send + Clone + 'static>() -> (
         Ok(())
     };
     (promise.into_data(), f)
+}
+
+fn create_disjointed<T: Send + 'static>() -> (
+    Disjointed<'static, Data>,
+    impl FnOnce(Data) -> Result<(), JobError>,
+) {
+    let (send, receive) = bounded::<Vec<T>>(1);
+    let inner = RecvPromise::new(receive);
+    let as_data_vec: BoxPromise<Vec<Data>> = Box::new(inner.map(|t| {
+        t.into_iter()
+            .map(|t| Box::new(t) as Data)
+            .collect()
+    }));
+
+    let disjointed: Disjointed<'static, Data>= Disjointed::new(as_data_vec);
+    let f = move |data: Data| -> Result<(), JobError> {
+        let as_t = *data.downcast::<Vec<T>>().expect("failed to downcast to vector");
+        send.send(as_t)
+            .map_err(|SendError(e)| SendError(Box::new(e) as Data))?;
+        Ok(())
+    };
+
+    (disjointed, f)
 }
 
 struct SetOutputFn(Box<dyn FnOnce(Data) -> Result<(), JobError> + Send>);
@@ -691,6 +743,27 @@ impl InputSource<&mut Output> for Input {
         }
     }
 }
+impl<P: Promise<Output = Data> + 'static> InputSource<P> for Input {
+    type Data = P::Output;
+
+    fn use_as_input_source(&mut self, other: P) -> Result<(), JobError> {
+        match (self.flavor, &mut self.kind) {
+            (InputFlavor::None, _) => Err(JobError::UnexpectedInput),
+            (InputFlavor::Single, to_set @ InputKind::None) => {
+                *to_set = InputKind::Single(Box::new(other));
+                Ok(())
+            }
+            (InputFlavor::Single, InputKind::Single(_)) => Err(JobError::InputAlreadySet),
+            (InputFlavor::Funnel, InputKind::Funnel(funnel)) => {
+                funnel.insert(other);
+                Ok(())
+            }
+            _ => {
+                panic!("input kind and flavor mismatch")
+            }
+        }
+    }
+}
 
 fortuples! {
     #[tuples::min_size(1)]
@@ -713,6 +786,9 @@ fortuples! {
                         }),
                         OutputKind::Once(None) => Err(JobError::OutputAlreadyUsed),
                         OutputKind::Once(_) | OutputKind::Reusable(_) => Ok(o.into_promise()),
+                        OutputKind::Disjointed(disjoints) => {
+                            todo!("disjointed can be used as input if not's been partially used")
+                        }
                     })
                     .collect::<Result<PromiseSet<_>, JobError >>()?;
 
@@ -841,7 +917,7 @@ impl IntoPromise for &mut Output {
     fn into_promise(self) -> Self::IntoPromise {
         match &mut self.kind {
             OutputKind::None => {
-                panic!("can not be used as an input")
+                panic!("can not be used as a promise")
             }
             OutputKind::Once(o) => {
                 let o = o.take().expect("output already used");
@@ -851,17 +927,54 @@ impl IntoPromise for &mut Output {
                 let cloned = s.clone();
                 TaskOutputPromise::Reusable(cloned.into_promise())
             }
+            OutputKind::Disjointed(_) => {
+                panic!("Can not infallibly made into a promise")
+            }
         }
     }
 }
 
 #[derive(Debug)]
 enum OutputKind {
+    /// no output
     None,
     /// used when the output can only be used once
     Once(Option<BoxPromise<'static, Data>>),
     /// Used when the output can be used multiple times
     Reusable(Reusable<'static, Data>),
+    /// Disjointed output
+    Disjointed(Disjointed<'static, Data>),
+}
+
+impl OutputKind {
+    fn as_reusable(&self) -> Option<&Reusable<'static, Data>> {
+        if let Self::Reusable(reusable) = self {
+            Some(reusable)
+        } else {
+            None
+        }
+    }
+    fn as_reusable_mut(&mut self) -> Option<&mut Reusable<'static, Data>> {
+        if let Self::Reusable(reusable) = self {
+            Some(reusable)
+        } else {
+            None
+        }
+    }
+    fn as_disjointed(&self) -> Option<&Disjointed<'static, Data>> {
+        if let Self::Disjointed(d) = self {
+            Some(d)
+        } else {
+            None
+        }
+    }
+    fn as_disjointed_mut(&mut self) -> Option<&mut Disjointed<'static, Data>> {
+        if let Self::Disjointed(d) = self {
+            Some(d)
+        } else {
+            None
+        }
+    }
 }
 
 /// An error occurred while executing a job
@@ -884,10 +997,11 @@ pub enum JobError {
 
     #[error("The input for this task was already set")]
     InputAlreadySet,
-    #[error("Unexpected type (expected: `{expected}`, actual: `{received}`)")]
+    #[error("Unexpected type (expected: `{expected}`, actual: `{received}`){}", comment.as_ref().map(|s| format!(": {s}")).unwrap_or(String::new()))]
     UnexpectedType {
         expected: &'static str,
         received: &'static str,
+        comment: Option<String>,
     },
     #[error("{output_flavor:?} can not be used as an input for {input_flavor:?}")]
     OutputCanNotBeUsedAsInput {
@@ -907,9 +1021,9 @@ impl From<FlowBackendError> for JobError {
 #[cfg(test)]
 pub(crate) mod test_fixtures {
     use crate::backend::job::{Data, Input, InputFlavor, InputKind, InputSource, JobError};
-    use crate::promise::MapPromise;
-    use crate::promise::{BoxPromise, Just};
-    use std::any::{TypeId, type_name};
+    use crate::sync::promise::MapPromise;
+    use crate::sync::promise::{BoxPromise, Just};
+    use std::any::{type_name, TypeId};
 
     /// Used for mocking a task input
     pub struct MockTaskInput<T>(pub T);
@@ -933,6 +1047,7 @@ pub(crate) mod test_fixtures {
                         return Err(JobError::UnexpectedType {
                             expected: self.input_ty_str,
                             received: type_name::<T>(),
+                            comment: None,
                         });
                     }
 
@@ -958,7 +1073,7 @@ mod tests {
     use crate::actions::action;
     use crate::backend::flow_backend::FlowBackendOutput;
     use crate::backend::job::test_fixtures::MockTaskInput;
-    use crate::promise::GetPromise;
+    use crate::sync::promise::GetPromise;
     use std::thread;
 
     #[test]
@@ -1029,6 +1144,54 @@ mod tests {
             .downcast::<i32>()
             .expect("failed to downcast output");
         assert_eq!(t, 32_i32);
+    }
+
+    #[test]
+    fn test_make_output_disjointed() {
+        let mut task = BackendJob::new("task", SingleOutput::new(), action(move || vec![1, 2, 3]));
+        task.output_mut()
+            .make_disjointed::<char>()
+            .expect_err("should fail to make disjoint");
+        task.output_mut()
+            .make_disjointed::<i32>()
+            .expect("failed to make disjoint");
+    }
+
+    #[test]
+    fn test_disjointed_flow_output() {
+        let mut task1 =
+            BackendJob::new("task1", SingleOutput::new(), action(move || vec![1, 2, 3]));
+        task1
+            .output_mut()
+            .make_disjointed::<i32>()
+            .expect("failed to make disjoint");
+        let disjoint = task1
+            .output_mut()
+            .kind
+            .as_disjointed_mut()
+            .expect("must be disjoint");
+
+        let mut task2 = BackendJob::new("task2", SingleOutput::new(), action(move |i: i32| {}));
+        task2
+            .input_mut()
+            .set_source(disjoint.get(0).unwrap())
+            .expect("failed to set");
+
+        let mut task3 =
+            BackendJob::new("task2", SingleOutput::new(), action(move |i: Vec<i32>| {}));
+        task3
+            .input_mut()
+            .set_source(
+                disjoint
+                    .get_range(1..)
+                    .unwrap()
+                    .map(|d| Box::new(d) as Data),
+            )
+            .expect("failed to set");
+
+        task1.run().expect("failed to run task1");
+        task2.run().expect("failed to run task2");
+        task3.run().expect("failed to run task3");
     }
 
     #[test]

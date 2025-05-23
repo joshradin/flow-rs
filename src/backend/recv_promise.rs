@@ -1,4 +1,4 @@
-use crate::promise::{PollPromise, Promise};
+use crate::sync::promise::{PollPromise, Promise};
 use crossbeam::channel::{Receiver, TryRecvError};
 
 pub struct RecvPromise<T> {

@@ -287,10 +287,11 @@ where
     PromiseFn { f: Some(f) }
 }
 
+
 #[cfg(test)]
 mod tests {
-    use crate::promise::{BoxPromise, Just};
-    use crate::promise::{GetPromise, MapPromise};
+    use crate::sync::promise::{BoxPromise, Just};
+    use crate::sync::promise::{GetPromise, MapPromise};
 
     #[test]
     fn test_promise() {

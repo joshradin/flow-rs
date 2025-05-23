@@ -55,11 +55,10 @@ pub mod io;
 pub mod job;
 pub mod job_ordering;
 pub mod listener;
-mod pool;
-mod promise;
+mod sync;
 
 mod private {
-    use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+    use std::ops::{Range, RangeFrom, RangeInclusive, RangeTo, RangeToInclusive};
     use std::sync::Arc;
 
     /// Sealed to make sure only internal types can implement this
@@ -88,4 +87,4 @@ mod private {
 
 pub use backend::job::{InputFlavor, JobError, JobId};
 pub use flow::*;
-pub use pool::FlowThreadPool;
+pub use sync::pool::FlowThreadPool;
