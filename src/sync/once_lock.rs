@@ -35,6 +35,7 @@ impl<T> OnceLock<T> {
         }
     }
 
+    #[allow(unused)]
     pub fn set(&self, value: T) -> Result<(), T> {
         match self.try_insert(value) {
             Ok(_) => Ok(()),
@@ -68,9 +69,8 @@ impl<T> OnceLock<T> {
         F: FnOnce() -> Result<T, E>,
     {
         if let Some(value) = self.get() {
-            return Ok(value)
+            return Ok(value);
         };
-
 
         self.initialize(init)?;
         debug_assert!(self.is_initialized());
@@ -82,10 +82,7 @@ impl<T> OnceLock<T> {
     where
         F: FnOnce() -> Option<T>,
     {
-        match self.get_or_try_init(|| init().ok_or(())) {
-            Ok(value) => Some(value),
-            Err(_) => None,
-        }
+        self.get_or_try_init(|| init().ok_or(())).ok()
     }
 
     unsafe fn get_unchecked(&self) -> &T {
@@ -105,7 +102,7 @@ impl<T> OnceLock<T> {
             {
                 Ok(_) => match f() {
                     Ok(ok) => {
-                        unsafe { (&mut *slot.get()).write(ok) };
+                        unsafe { (*slot.get()).write(ok) };
                         self.state.store(OnceLockState::Initialized);
                         break;
                     }
@@ -158,14 +155,8 @@ mod tests {
     #[test]
     fn test_once_lock_try_set_opt() {
         let once = OnceLock::<i32>::new();
-        assert!(once.get_or_try_init_opt(|| {
-            None
-        }).is_none());
-        assert_eq!(once.get_or_try_init_opt(|| {
-            Some(128)
-        }), Some(&128));
-        assert_eq!(once.get_or_try_init_opt(|| {
-            Some(256)
-        }), Some(&128));
+        assert!(once.get_or_try_init_opt(|| { None }).is_none());
+        assert_eq!(once.get_or_try_init_opt(|| { Some(128) }), Some(&128));
+        assert_eq!(once.get_or_try_init_opt(|| { Some(256) }), Some(&128));
     }
 }

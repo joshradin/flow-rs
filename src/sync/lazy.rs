@@ -1,4 +1,5 @@
 //! Lazy from promise
+#![expect(unused)]
 
 use crate::sync::promise::{BoxPromise, IntoPromise, Just, PollPromise, Promise};
 use std::marker::PhantomData;
@@ -75,7 +76,6 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +83,5 @@ mod tests {
     #[test]
     fn test_lazy() {
         let lazy = Lazy::new(Just::new(15));
-
     }
 }

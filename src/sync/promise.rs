@@ -29,6 +29,7 @@ pub trait PromiseExt: Promise + Sized {
     }
 
     /// Waits if necessary for at most the given computation to complete, then retrieves the result if available.
+    #[allow(unused)]
     fn get_timeout(mut self, timeout: Duration) -> Result<Self::Output, Self> {
         let start = Instant::now();
         while start.elapsed() < timeout {
@@ -44,6 +45,7 @@ pub trait PromiseExt: Promise + Sized {
     }
 }
 
+#[allow(unused)]
 pub trait GetPromise: IntoPromise + Sized {
     /// Gets the value of this promise once it's ready
     fn get(self) -> Self::Output {
@@ -279,6 +281,7 @@ where
 }
 
 /// Creates a promise fn
+#[allow(unused)]
 pub fn promise_fn<T, F>(f: F) -> PromiseFn<T, F>
 where
     F: FnOnce() -> T + Send,
@@ -286,7 +289,6 @@ where
 {
     PromiseFn { f: Some(f) }
 }
-
 
 #[cfg(test)]
 mod tests {

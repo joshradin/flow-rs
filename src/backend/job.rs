@@ -1,6 +1,6 @@
 //! A task within the backend
 
-use crate::actions::{action, Action, BoxAction, Runnable};
+use crate::actions::{Action, BoxAction, Runnable, action};
 use crate::backend::disjointed::Disjointed;
 use crate::backend::flow_backend::{FlowBackendError, FlowBackendInput};
 use crate::backend::funnel::BackendFunnel;
@@ -10,9 +10,9 @@ use crate::backend::reusable::Reusable;
 use crate::private::Sealed;
 use crate::sync::promise::{BoxPromise, PollPromise, Promise, PromiseExt, PromiseSet};
 use crate::sync::promise::{IntoPromise, MapPromise};
-use crossbeam::channel::{bounded, Receiver, RecvError, SendError, Sender};
+use crossbeam::channel::{Receiver, RecvError, SendError, Sender, bounded};
 use fortuples::fortuples;
-use std::any::{type_name, Any, TypeId};
+use std::any::{Any, TypeId, type_name};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
@@ -314,43 +314,6 @@ impl<T: Send + 'static> Action for ReceiveInputAction<T> {
     }
 }
 
-struct SendDisjointedOutputAction<T> {
-    receiver: Receiver<Data>,
-    sender: Sender<Data>,
-    _marker: PhantomData<T>,
-}
-
-impl<T: Send + 'static> Action for SendDisjointedOutputAction<T> {
-    type Input = ();
-    type Output = ();
-
-    fn apply(&mut self, input: Self::Input) -> Self::Output {
-        let i = *self
-            .receiver
-            .recv()
-            .expect("failed to receive input")
-            .downcast::<Vec<T>>()
-            .unwrap_or_else(|e| {
-                panic!("failed to downcast {:?} to `{}`", e, type_name::<Vec<T>>())
-            });
-        panic!("")
-    }
-
-    fn input_flavor(&self) -> InputFlavor {
-        InputFlavor::None
-    }
-}
-
-impl<T> SendDisjointedOutputAction<T> {
-    fn new(receiver: Receiver<Data>, sender: Sender<Data>) -> Self {
-        Self {
-            receiver,
-            sender,
-            _marker: PhantomData,
-        }
-    }
-}
-
 struct ReceiveFunnelInputAction<T, I: FromIterator<T>> {
     receiver: Receiver<Data>,
     sender: Sender<Data>,
@@ -472,6 +435,7 @@ impl Input {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn check_type<T: 'static>(&self) -> Result<(), JobError> {
         if TypeId::of::<T>() != self.input_ty {
             Err(JobError::UnexpectedType {
@@ -830,7 +794,7 @@ fortuples! {
                         }),
                         OutputKind::Once(None) => Err(JobError::OutputAlreadyUsed),
                         OutputKind::Once(_) | OutputKind::Reusable(_) => Ok(o.into_promise()),
-                        OutputKind::Disjointed(disjoints) => {
+                        OutputKind::Disjointed(_disjoints) => {
                             todo!("disjointed can be used as input if not's been partially used")
                         }
                     })
@@ -990,6 +954,7 @@ pub(crate) enum OutputKind {
     Disjointed(Disjointed<'static, Data>),
 }
 
+#[allow(unused)]
 impl OutputKind {
     fn as_reusable(&self) -> Option<&Reusable<'static, Data>> {
         if let Self::Reusable(reusable) = self {
@@ -1067,7 +1032,7 @@ pub(crate) mod test_fixtures {
     use crate::backend::job::{Data, Input, InputFlavor, InputKind, InputSource, JobError};
     use crate::sync::promise::MapPromise;
     use crate::sync::promise::{BoxPromise, Just};
-    use std::any::{type_name, TypeId};
+    use std::any::{TypeId, type_name};
 
     /// Used for mocking a task input
     pub struct MockTaskInput<T>(pub T);
@@ -1218,18 +1183,16 @@ mod tests {
             .set_source(disjoint.get(0).unwrap())
             .expect("failed to set");
 
-        let mut task3 =
-            BackendJob::new("task2", SingleOutput::new(), action(move |i: Vec<i32>| {
+        let mut task3 = BackendJob::new(
+            "task2",
+            SingleOutput::new(),
+            action(move |i: Vec<i32>| {
                 assert_eq!(i.len(), 2);
-            }));
+            }),
+        );
         task3
             .input_mut()
-            .set_source(
-                disjoint
-                    .get_range(1..)
-                    .unwrap()
-                    .downcast_elements::<i32>(),
-            )
+            .set_source(disjoint.get_range(1..).unwrap().downcast_elements::<i32>())
             .expect("failed to set");
 
         task1.run().expect("failed to run task1");

@@ -3,17 +3,15 @@
 use crate::backend::job::{Data, Input, InputKind, InputSource};
 use crate::backend::overlap_checking::OverlapChecker;
 use crate::sync::once_lock::OnceLock;
-use crate::sync::promise::{BoxPromise, GetPromise, IntoPromise, MapPromise, PollPromise, Promise};
+use crate::sync::promise::{BoxPromise, IntoPromise, MapPromise, PollPromise, Promise};
 use crate::{InputFlavor, JobError};
 use parking_lot::Mutex;
-use std::any::{type_name, Any};
+use std::any::type_name;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::ops::{Bound, Deref, RangeBounds};
+use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
 use thiserror::Error;
-
-type ToData<'lf, T> = Arc<dyn Fn(Vec<T>) -> Box<dyn Any + Send> + Send + Sync + 'lf>;
 
 /// Disjointed partial promise
 pub struct Disjointed<'lf, T, P: Promise<Output = Vec<T>> + 'lf = BoxPromise<'lf, Vec<T>>>
@@ -50,12 +48,7 @@ where
         index: R,
     ) -> Result<DisjointedRange<'lf, T, R, P>, DisjointedError> {
         let (start, end) = (index.start_bound().cloned(), index.end_bound().cloned());
-        if self
-            .inner
-            .checker
-            .lock()
-            .insert((start.clone(), end.clone()))
-        {
+        if self.inner.checker.lock().insert((start, end)) {
             Ok(DisjointedRange {
                 range: index,
                 inner: self.inner.clone(),
@@ -276,7 +269,6 @@ impl<
 }
 
 type Buf<T> = Vec<Mutex<Option<T>>>;
-type BoxLazyInitializer<T> = Box<dyn FnOnce() -> Buf<T> + Send>;
 
 struct DisjointedInner<'lf, T: Send + 'lf, P: Promise<Output = Vec<T>> + 'lf> {
     checker: Mutex<OverlapChecker<usize>>,

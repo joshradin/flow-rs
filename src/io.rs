@@ -8,4 +8,4 @@
 pub mod disjoint;
 
 #[doc(inline)]
-pub use disjoint::{Disjointed};
+pub use disjoint::Disjointed;

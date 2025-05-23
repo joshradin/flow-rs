@@ -42,7 +42,6 @@ impl Default for FlowThreadPool {
     }
 }
 
-
 impl FlowThreadPool {
     /// Create a new thread pool
     pub fn new(core_size: usize, max_size: usize, timeout: Duration) -> Self {
@@ -106,11 +105,11 @@ impl<T: Send> Promise for FlowThreadPoolPromise<T> {
 mod tests {
     use super::*;
     use crate::sync::promise::{GetPromise, PromiseSet};
+    use static_assertions::assert_impl_all;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread::yield_now;
-    use static_assertions::assert_impl_all;
     use tracing::{info, info_span};
 
     assert_impl_all!(FlowThreadPool: Sync);

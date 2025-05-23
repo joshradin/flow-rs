@@ -27,7 +27,6 @@ pub struct FlowBackend<T: JobOrderer = DefaultTaskOrderer, P: WorkerPool = FlowT
     output: FlowBackendOutput,
 }
 
-
 impl FlowBackend {
     /// Creates a new flow backend
     pub fn new() -> Self {
@@ -464,11 +463,11 @@ impl FlowGraph for BackendFlowGraph {
 
 #[cfg(test)]
 mod tests {
-    use static_assertions::assert_impl_all;
     use super::*;
     use crate::actions::action;
     use crate::backend::job::test_fixtures::MockTaskInput;
     use crate::backend::job::{InputFlavor, ReusableOutput, SingleOutput};
+    use static_assertions::assert_impl_all;
     use test_log::test;
 
     assert_impl_all!(FlowBackend: Send);

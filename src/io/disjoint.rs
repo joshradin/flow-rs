@@ -18,8 +18,6 @@ use crate::private::Sealed;
 use std::collections::Bound;
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
-
-
 /// A disjointed task is a special type that allows it's outputs to be split
 pub struct Disjointed<T>(pub(crate) T);
 
@@ -31,9 +29,7 @@ impl<S> Disjointed<S> {
     {
         index.get(self)
     }
-
 }
-
 
 impl<S> Funneled<Disjointed<S>> {
     /// Gets the disjointed output of a funnelled task
@@ -43,9 +39,7 @@ impl<S> Funneled<Disjointed<S>> {
     {
         index.get(&self.0)
     }
-
 }
-
 
 impl<I, O, TO: JobOrderer> Disjointed<JobReference<I, O, TO>> {
     /// Makes this step reusable if it hasn't already been used as input
@@ -54,7 +48,7 @@ impl<I, O, TO: JobOrderer> Disjointed<JobReference<I, O, TO>> {
         I: FromIterator<T> + IntoIterator<Item = T, IntoIter: Send> + Send + 'static,
     {
         let id = *self.0.id();
-        transaction_mut(&self.0.backend(), |backend| {
+        transaction_mut(self.0.backend(), |backend| {
             let option = backend.get_mut(id).expect("backend task must exist");
             option.make_funnel::<T, I>()
         })?;
@@ -79,8 +73,6 @@ impl<S: JobRefWithBackend> JobRefWithBackend for Disjointed<S> {
         self.0.backend()
     }
 }
-
-
 
 /// Helper trait for indexing into [`Disjointed`] types.
 pub trait DisjointIndex<T>: Sealed
@@ -111,7 +103,7 @@ impl<S: DisjointableJobRefWithBackend> DisjointIndex<Disjointed<S>> for usize {
 
 impl<S: DisjointableJobRefWithBackend> DisjointIndex<Funneled<Disjointed<S>>> for usize {
     type Output<'a>
-    = DisjointedElement<'a, S>
+        = DisjointedElement<'a, S>
     where
         S: 'a;
 
@@ -122,7 +114,6 @@ impl<S: DisjointableJobRefWithBackend> DisjointIndex<Funneled<Disjointed<S>>> fo
         }
     }
 }
-
 
 macro_rules! impl_disjoint_index_on_range {
     ($($ty:ty),* $(,)?) => {
@@ -181,7 +172,7 @@ where
             let (this, other) = backend.get_mut2(this_id, other_id).unwrap();
             let OutputKind::Disjointed(d) = &mut this.output_mut().kind else {
                 eprintln!("output kind: {:?}", this.output().flavor);
-                return Err(FlowError::OutputNotDisjoint)
+                return Err(FlowError::OutputNotDisjoint);
             };
             let result = d.get(self.index)?;
             other.input_mut().set_source(result)?;
@@ -209,10 +200,9 @@ where
             let (this, other) = backend.get_mut2(this_id, other_id).unwrap();
             let OutputKind::Disjointed(d) = &mut this.output_mut().kind else {
                 eprintln!("output kind: {:?}", this.output().flavor);
-                return Err(FlowError::OutputNotDisjoint)
+                return Err(FlowError::OutputNotDisjoint);
             };
-            let result = d.get_range(self.range)?
-                .downcast_elements::<T::Element>();
+            let result = d.get_range(self.range)?.downcast_elements::<T::Element>();
             other.input_mut().set_source(result)?;
             other.input_mut().depends_on(this.id());
             Ok(())
@@ -229,15 +219,15 @@ mod private {
     }
 }
 use crate::backend::job::OutputKind;
-use crate::flow::{transaction_mut, WeakFlowBackend};
+use crate::flow::{WeakFlowBackend, transaction_mut};
 use crate::job_ordering::JobOrderer;
 use crate::{FlowError, FlowsInto, Funneled, JobId, JobRef, JobReference};
 use private::*;
 
 #[cfg(test)]
 mod tests {
-    use crate::io::disjoint::DisjointableJobRefWithBackend;
     use crate::JobReference;
+    use crate::io::disjoint::DisjointableJobRefWithBackend;
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     assert_impl_all!(JobReference<(), Vec<usize>>: DisjointableJobRefWithBackend);

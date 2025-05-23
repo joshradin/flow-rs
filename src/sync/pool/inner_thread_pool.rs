@@ -42,7 +42,6 @@ impl Debug for ThreadPoolTask {
     }
 }
 
-
 type Stealer = crossbeam::deque::Stealer<ThreadPoolTask>;
 type Injector = crossbeam::deque::Injector<ThreadPoolTask>;
 type Worker = crossbeam::deque::Worker<ThreadPoolTask>;
@@ -397,8 +396,8 @@ impl WorkerThreadRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Barrier;
     use static_assertions::assert_impl_all;
+    use std::sync::Barrier;
     use test_log::test;
     use tracing::trace;
 
