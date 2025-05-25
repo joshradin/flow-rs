@@ -1,6 +1,4 @@
 //! The worker pool used by jobflow.
-//!
-//!
 
 use crate::backend::recv_promise::RecvPromise;
 use crate::sync::pool::inner_thread_pool::InnerThreadPool;

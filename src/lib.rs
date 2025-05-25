@@ -15,9 +15,7 @@
 //! ```rust
 //! use jobflow::Flow;
 //! let mut flow = Flow::new();
-//! flow.create("print something", || {
-//!     println!("Hello!")
-//! });
+//! flow.create("print something", || println!("Hello!"));
 //! flow.run().expect("failed to run");
 //! ```
 //!
@@ -26,9 +24,12 @@
 //! use jobflow::{Flow, FlowsInto};
 //!
 //! let mut flow = Flow::new();
-//! let job = flow.input().flows_into(flow.create("square", |i: i32| { i * i }))
-//!  .unwrap().flows_into(flow.output())
-//! .unwrap();
+//! let job = flow
+//!     .input()
+//!     .flows_into(flow.create("square", |i: i32| i * i))
+//!     .unwrap()
+//!     .flows_into(flow.output())
+//!     .unwrap();
 //! let output = flow.apply(10).unwrap();
 //! assert_eq!(output, 100);
 //! ```
@@ -39,11 +40,16 @@
 //! ```rust
 //! use jobflow::{Flow, FlowsInto};
 //! let mut flow = Flow::new();
-//! let funnel = flow.create("sum", |i: Vec<i32>| { i.iter().sum::<i32>()}).funnelled().unwrap();
+//! let funnel = flow
+//!     .create("sum", |i: Vec<i32>| i.iter().sum::<i32>())
+//!     .funnelled()
+//!     .unwrap();
 //!
-//! flow.create("a", || { 25_i32 }).flows_into(&funnel).unwrap();
-//! flow.create("b", || { 50_i32 }).flows_into(&funnel).unwrap();
-//! funnel.flows_into(flow.output()).expect("could set sum as output");
+//! flow.create("a", || 25_i32).flows_into(&funnel).unwrap();
+//! flow.create("b", || 50_i32).flows_into(&funnel).unwrap();
+//! funnel
+//!     .flows_into(flow.output())
+//!     .expect("could set sum as output");
 //! let sum = flow.get().expect("failed to get sum");
 //! assert_eq!(sum, 75);
 //! ```
@@ -58,9 +64,12 @@
 //! ```rust
 //! use jobflow::{Flow, FlowsInto};
 //! let mut flow = Flow::new();
-//! let generator = flow.create("generator", || { (0..32).into_iter().collect::<Vec<i32>>() }).disjointed().unwrap();
-//! let first_half = flow.create("1/2", |v: Vec<i32>| { assert_eq!(v.len(), 16)});
-//! let second_half = flow.create("2/2", |v: Vec<i32>| { assert_eq!(v.len(), 16)});
+//! let generator = flow
+//!     .create("generator", || (0..32).into_iter().collect::<Vec<i32>>())
+//!     .disjointed()
+//!     .unwrap();
+//! let first_half = flow.create("1/2", |v: Vec<i32>| assert_eq!(v.len(), 16));
+//! let second_half = flow.create("2/2", |v: Vec<i32>| assert_eq!(v.len(), 16));
 //!
 //! generator.gets(..16).flows_into(first_half).unwrap();
 //! generator.gets(16..).flows_into(second_half).unwrap();
